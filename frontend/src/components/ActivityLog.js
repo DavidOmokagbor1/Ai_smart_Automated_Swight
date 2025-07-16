@@ -53,7 +53,7 @@ const ActivityLog = () => {
     };
 
     // Listen for real-time activity updates
-    const socket = io('http://localhost:5001', {
+    const socket = io('http://localhost:5000', {
       transports: ['websocket', 'polling'],
       timeout: 20000,
       forceNew: true

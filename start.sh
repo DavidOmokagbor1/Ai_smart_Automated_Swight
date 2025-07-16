@@ -41,7 +41,7 @@ pkill -f "node.*start" 2>/dev/null
 # Check and free ports
 echo "🔍 Checking port availability..."
 check_port 3000
-check_port 5001
+check_port 5000
 
 # Wait for ports to be freed
 sleep 3
@@ -61,7 +61,7 @@ python3 app.py &
 BACKEND_PID=$!
 
 # Wait for backend to be ready
-if wait_for_service "http://localhost:5001/api/status"; then
+if wait_for_service "http://localhost:5000/api/status"; then
     echo "✅ Backend server is running (PID: $BACKEND_PID)"
 else
     echo "❌ Backend failed to start properly"
@@ -93,7 +93,7 @@ fi
 
 echo ""
 echo "🎉 AI Smart Light Control System is ready!"
-echo "📊 Backend: http://localhost:5001"
+echo "📊 Backend: http://localhost:5000"
 echo "🌐 Frontend: http://localhost:3000"
 echo ""
 echo "💡 Tips:"
@@ -102,7 +102,7 @@ echo "   - Run './restart_app.sh' to restart the system"
 echo "   - Check logs in the terminal for debugging"
 echo ""
 echo "🤖 AI Mode Status:"
-curl -s http://localhost:5001/api/ai/status | python3 -c "
+curl -s http://localhost:5000/api/ai/status | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)

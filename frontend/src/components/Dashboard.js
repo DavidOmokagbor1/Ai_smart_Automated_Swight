@@ -40,7 +40,7 @@ const Dashboard = ({ lights, schedules }) => {
 
   useEffect(() => {
     // Initialize socket connection
-    const newSocket = io('http://localhost:5001', {
+    const newSocket = io('http://localhost:5000', {
       transports: ['websocket', 'polling'],
       timeout: 20000,
       forceNew: true
