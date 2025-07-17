@@ -49,6 +49,10 @@ weather_cache = {
     'cache_duration': 300  # 5 minutes
 }
 
+# Real-time weather update thread
+weather_update_thread = None
+weather_update_interval = 300  # 5 minutes
+
 # Schedule execution tracking
 schedule_execution_tracker = {}
 
@@ -178,7 +182,6 @@ def get_weather_data():
         return weather_cache['data']
     
     try:
-        # Use demo data if no API key
         if WEATHER_API_KEY == 'demo_key':
             weather_data = {
                 'main': {
@@ -198,18 +201,57 @@ def get_weather_data():
             }
         else:
             # Real API call
-            params = {
-                'q': WEATHER_CITY,
-                'appid': WEATHER_API_KEY,
-                'units': 'metric'
-            }
-            response = requests.get(WEATHER_BASE_URL, params=params, timeout=5)
-            weather_data = response.json()
-        
+            try:
+                params = {
+                    'q': WEATHER_CITY,
+                    'appid': WEATHER_API_KEY,
+                    'units': 'imperial'
+                }
+                response = requests.get(WEATHER_BASE_URL, params=params, timeout=5)
+                if response.status_code == 200:
+                    weather_data = response.json()
+                    logger.info(f"Successfully fetched weather data for {WEATHER_CITY}")
+                else:
+                    logger.warning(f"Weather API error: {response.status_code} - {response.text}")
+                    # Fall back to demo data
+                    weather_data = {
+                        'main': {
+                            'temp': 20,
+                            'humidity': 65,
+                            'pressure': 1013
+                        },
+                        'weather': [{
+                            'main': 'Clouds',
+                            'description': 'scattered clouds',
+                            'icon': '03d'
+                        }],
+                        'clouds': {'all': 40},
+                        'visibility': 10000,
+                        'wind': {'speed': 5, 'deg': 180},
+                        'sys': {'sunrise': 1640995200, 'sunset': 1641038400}
+                    }
+            except Exception as api_error:
+                logger.error(f"Weather API call failed: {api_error}")
+                # Fall back to demo data
+                weather_data = {
+                    'main': {
+                        'temp': 20,
+                        'humidity': 65,
+                        'pressure': 1013
+                    },
+                    'weather': [{
+                        'main': 'Clouds',
+                        'description': 'scattered clouds',
+                        'icon': '03d'
+                    }],
+                    'clouds': {'all': 40},
+                    'visibility': 10000,
+                    'wind': {'speed': 5, 'deg': 180},
+                    'sys': {'sunrise': 1640995200, 'sunset': 1641038400}
+                }
         # Cache the data
         weather_cache['data'] = weather_data
         weather_cache['last_update'] = current_time
-        
         return weather_data
     except Exception as e:
         logger.error(f"Error fetching weather data: {e}")
@@ -286,6 +328,67 @@ def get_natural_light_factor():
         weather_multiplier = 0.8
     
     return min(1.0, base_factor * weather_multiplier)
+
+def emit_weather_update():
+    """Emit real-time weather update via WebSocket"""
+    try:
+        weather_data = get_weather_data()
+        if weather_data:
+            weather_adjustment = get_weather_lighting_adjustment()
+            natural_light_factor = get_natural_light_factor()
+            
+            weather_update = {
+                'weather': weather_data,
+                'lighting_adjustment': round(weather_adjustment, 2),
+                'natural_light_factor': round(natural_light_factor, 2),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            socketio.emit('weather_update', weather_update)
+            logger.info("Weather update emitted via WebSocket")
+        else:
+            logger.warning("Weather data unavailable, using demo data")
+            
+    except Exception as e:
+        logger.error(f"Error emitting weather update: {e}")
+        # Fall back to demo data
+        try:
+            demo_weather = {
+                'weather': {
+                    'main': {
+                        'temp': 20,
+                        'humidity': 65,
+                        'pressure': 1013
+                    },
+                    'weather': [{
+                        'main': 'Clouds',
+                        'description': 'scattered clouds',
+                        'icon': '03d'
+                    }],
+                    'clouds': {'all': 40},
+                    'visibility': 10000,
+                    'wind': {'speed': 5, 'deg': 180},
+                    'sys': {'sunrise': 1640995200, 'sunset': 1641038400}
+                },
+                'lighting_adjustment': 1.0,
+                'natural_light_factor': 0.32,
+                'timestamp': datetime.now().isoformat()
+            }
+            socketio.emit('weather_update', demo_weather)
+            logger.info("Demo weather update emitted via WebSocket")
+        except Exception as demo_error:
+            logger.error(f"Error emitting demo weather update: {demo_error}")
+
+def weather_update_loop():
+    """Background thread for real-time weather updates"""
+    logger.info("Weather update loop started")
+    while True:
+        try:
+            emit_weather_update()
+            time.sleep(weather_update_interval)  # Update every 5 minutes
+        except Exception as e:
+            logger.error(f"Error in weather update loop: {e}")
+            time.sleep(60)  # Wait 1 minute before retrying
 
 def execute_schedule_event(room, event):
     """Execute a scheduled event for a room"""
@@ -1524,6 +1627,9 @@ if __name__ == '__main__':
     
     ai_thread = threading.Thread(target=ai_control_loop, daemon=True)
     ai_thread.start()
+    
+    weather_thread = threading.Thread(target=weather_update_loop, daemon=True)
+    weather_thread.start()
     
     # Use environment variable for port or default to 5000
     port = int(os.getenv('PORT', 5000))

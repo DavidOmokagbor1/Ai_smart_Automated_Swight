@@ -9,6 +9,7 @@ import {
   CloudArrowDownIcon
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
+import io from 'socket.io-client';
 
 
 const Weather = () => {
@@ -30,10 +31,35 @@ const Weather = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // Listen for real-time weather updates via WebSocket
+  useEffect(() => {
+    const socket = io('http://localhost:5000', {
+      transports: ['websocket', 'polling'],
+      timeout: 20000,
+      forceNew: true
+    });
+    
+    socket.on('weather_update', (data) => {
+      // Defensive: log the data and set only the expected part
+      console.log('Received weather_update:', data);
+      if (data && data.weather) {
+        setWeatherData(data);
+        toast.success(`Weather updated: ${data.weather.weather && data.weather.weather[0] ? data.weather.weather[0].description : 'N/A'}`);
+      } else {
+        toast.error('Malformed weather update received');
+      }
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, []);
+
   const fetchWeatherData = async () => {
     try {
       const response = await fetch('/api/weather');
       const data = await response.json();
+      console.log('Fetched weather data:', data);
       setWeatherData(data);
     } catch (error) {
       console.error('Error fetching weather data:', error);
@@ -99,6 +125,7 @@ const Weather = () => {
     }
   };
 
+  // Defensive: check for weatherData and nested properties before rendering
   if (loading) {
     return (
       <div className="p-6 min-h-screen bg-gray-100 dark:bg-[#23272f]">
@@ -109,7 +136,7 @@ const Weather = () => {
     );
   }
 
-  if (!weatherData) {
+  if (!weatherData || !weatherData.weather || !Array.isArray(weatherData.weather.weather) || !weatherData.weather.weather[0]) {
     return (
       <div className="p-6 min-h-screen bg-gray-100 dark:bg-[#23272f]">
         <div className="text-center text-gray-500 dark:text-gray-400">
@@ -173,7 +200,7 @@ const Weather = () => {
           <div className="bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-2xl p-6">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="text-2xl font-bold">{weather.main.temp}°C</h3>
+                <h3 className="text-2xl font-bold">{weather.main.temp}°F</h3>
                 <p className="text-blue-100">{currentWeather.description}</p>
               </div>
               {getWeatherIcon(currentWeather.main, currentWeather.description)}

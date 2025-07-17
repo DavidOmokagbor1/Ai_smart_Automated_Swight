@@ -104,6 +104,11 @@ const Dashboard = ({ lights, schedules }) => {
       }));
     });
 
+    newSocket.on('weather_update', (data) => {
+      toast.success(`Weather updated: ${data.weather.weather[0].description}`);
+      // You can add weather state management here if needed
+    });
+
     // Fetch initial status
     fetchSystemStatus();
     fetchAiStatus();
