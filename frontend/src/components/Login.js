@@ -7,9 +7,8 @@ import {
   EyeIcon,
   EyeSlashIcon
 } from '@heroicons/react/24/outline';
-import toast from 'react-hot-toast';
 
-const Login = ({ onLogin }) => {
+const Login = ({ onLogin, error }) => {
   const [credentials, setCredentials] = useState({
     username: '',
     password: ''
@@ -17,51 +16,17 @@ const Login = ({ onLogin }) => {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Demo credentials
-  const demoCredentials = {
-    username: 'demo',
-    password: 'demo123'
-  };
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsLoading(true);
 
-    // Simulate API call delay
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // Check against demo credentials
-    if (credentials.username === demoCredentials.username && 
-        credentials.password === demoCredentials.password) {
-      
-      // Create demo user object
-      const demoUser = {
-        id: 1,
-        username: 'demo',
-        email: 'demo@smartlights.com',
-        role: 'admin',
-        preferences: {
-          light_preferences: {
-            default_brightness: 80,
-            favorite_color_temperature: 'warm'
-          },
-          notifications: {
-            email: true,
-            push: true
-          }
-        }
-      };
-
-      // Store in localStorage for demo
-      localStorage.setItem('demoUser', JSON.stringify(demoUser));
-      
-      toast.success('Welcome to AI Smart Light Control!');
-      onLogin(demoUser);
-    } else {
-      toast.error('Invalid credentials. Use demo/demo123');
+    try {
+      await onLogin(credentials);
+    } catch (error) {
+      console.error('Login failed:', error);
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   };
 
   const handleInputChange = (e) => {
@@ -69,10 +34,6 @@ const Login = ({ onLogin }) => {
       ...credentials,
       [e.target.name]: e.target.value
     });
-  };
-
-  const handleDemoLogin = () => {
-    setCredentials(demoCredentials);
   };
 
   return (
@@ -91,15 +52,16 @@ const Login = ({ onLogin }) => {
             </div>
             <h2 className="text-3xl font-bold text-gray-900">Welcome Back</h2>
             <p className="mt-2 text-sm text-gray-600">
-              Sign in to your AI Smart Light Control System
+              Sign in to your Smart Home Lighting System
             </p>
           </div>
 
-          {/* Demo Banner */}
-          <div className="mb-6 p-4 bg-gradient-to-r from-green-500 to-blue-500 rounded-lg text-white text-center">
-            <p className="text-sm font-medium">🎬 Demo Mode</p>
-            <p className="text-xs opacity-90">Use demo credentials for quick access</p>
-          </div>
+          {/* Error Message */}
+          {error && (
+            <div className="mb-6 p-4 bg-red-100 border border-red-200 rounded-lg text-red-600 text-center">
+              <p className="text-sm font-medium">Error: {error}</p>
+            </div>
+          )}
 
           {/* Login Form */}
           <form onSubmit={handleSubmit} className="space-y-6">
@@ -156,15 +118,6 @@ const Login = ({ onLogin }) => {
               </div>
             </div>
 
-            {/* Demo Credentials */}
-            <div className="bg-gray-50 rounded-lg p-4">
-              <p className="text-xs text-gray-600 mb-2">Demo Credentials:</p>
-              <div className="text-xs font-mono text-gray-700">
-                <p>Username: <span className="font-bold">demo</span></p>
-                <p>Password: <span className="font-bold">demo123</span></p>
-              </div>
-            </div>
-
             {/* Login Button */}
             <motion.button
               whileHover={{ scale: 1.02 }}
@@ -182,23 +135,12 @@ const Login = ({ onLogin }) => {
                 'Sign In'
               )}
             </motion.button>
-
-            {/* Quick Demo Login */}
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              type="button"
-              onClick={handleDemoLogin}
-              className="w-full flex justify-center py-2 px-4 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-            >
-              🚀 Quick Demo Login
-            </motion.button>
           </form>
 
           {/* Footer */}
           <div className="mt-8 text-center">
             <p className="text-xs text-gray-500">
-              This is a demo system. No real authentication required.
+              Secure authentication powered by Smart Home System
             </p>
           </div>
         </div>

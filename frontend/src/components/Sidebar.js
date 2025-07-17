@@ -9,8 +9,10 @@ import {
   ArrowRightOnRectangleIcon,
   MoonIcon,
   SunIcon,
-  CpuChipIcon,
+  CogIcon,
   CloudIcon,
+  ShieldCheckIcon,
+  DevicePhoneMobileIcon,
 } from '@heroicons/react/24/outline';
 
 const Sidebar = ({ user, onLogout, darkMode, setDarkMode }) => {
@@ -22,8 +24,10 @@ const Sidebar = ({ user, onLogout, darkMode, setDarkMode }) => {
     { name: 'Scheduling', href: '/scheduling', icon: ClockIcon },
     { name: 'Weather', href: '/weather', icon: CloudIcon },
     { name: 'Statistics', href: '/statistics', icon: ChartBarIcon },
-    { name: 'Hardware Demo', href: '/hardware', icon: CpuChipIcon },
     { name: 'Activity Logs', href: '/activity', icon: ChartBarIcon },
+    { name: 'Device Management', href: '/devices', icon: DevicePhoneMobileIcon },
+    { name: 'Security', href: '/security', icon: ShieldCheckIcon },
+    { name: 'Settings', href: '/settings', icon: CogIcon },
     { name: 'Profile', href: '/profile', icon: UserIcon },
   ];
 
@@ -39,13 +43,13 @@ const Sidebar = ({ user, onLogout, darkMode, setDarkMode }) => {
       <div className="flex items-center justify-center h-16 bg-gradient-to-r from-indigo-600 to-purple-600">
         <div className="flex items-center">
           <LightBulbIcon className="h-8 w-8 text-white" />
-          <span className="ml-2 text-xl font-bold text-white">AI Smart Lights</span>
+          <span className="ml-2 text-xl font-bold text-white">Smart Home</span>
         </div>
       </div>
 
       {/* User Info */}
       {user && (
-        <div className="px-4 py-3 border-b border-gray-200">
+        <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center">
             <div className="flex-shrink-0">
               <div className="h-10 w-10 bg-indigo-600 rounded-full flex items-center justify-center">
@@ -53,8 +57,12 @@ const Sidebar = ({ user, onLogout, darkMode, setDarkMode }) => {
               </div>
             </div>
             <div className="ml-3">
-              <p className="text-sm font-medium text-gray-900">{user.username}</p>
-              <p className="text-xs text-gray-500 capitalize">{user.role}</p>
+              <p className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                {user.username || user.name || 'User'}
+              </p>
+              <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                {user.role || 'Home Owner'}
+              </p>
             </div>
           </div>
         </div>
@@ -70,13 +78,15 @@ const Sidebar = ({ user, onLogout, darkMode, setDarkMode }) => {
               to={item.href}
               className={`group flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors ${
                 isActive
-                  ? 'bg-indigo-100 text-indigo-700 border-r-2 border-indigo-600'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                  ? 'bg-indigo-100 text-indigo-700 border-r-2 border-indigo-600 dark:bg-indigo-900 dark:text-indigo-300'
+                  : darkMode 
+                    ? 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
               }`}
             >
               <item.icon
                 className={`mr-3 h-5 w-5 ${
-                  isActive ? 'text-indigo-600' : 'text-gray-400 group-hover:text-gray-500'
+                  isActive ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-400 group-hover:text-gray-500 dark:group-hover:text-gray-300'
                 }`}
               />
               {item.name}
@@ -86,7 +96,7 @@ const Sidebar = ({ user, onLogout, darkMode, setDarkMode }) => {
       </nav>
 
       {/* Dark Mode Toggle */}
-      <div className="px-4 py-2 border-t border-gray-200 flex items-center justify-between">
+      <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
         <span className={darkMode ? "text-gray-200 text-sm" : "text-gray-700 text-sm"}>Night Mode</span>
         <button
           onClick={() => setDarkMode(!darkMode)}
@@ -98,12 +108,16 @@ const Sidebar = ({ user, onLogout, darkMode, setDarkMode }) => {
       </div>
 
       {/* Logout */}
-      <div className="px-4 py-4 border-t border-gray-200">
+      <div className="px-4 py-4 border-t border-gray-200 dark:border-gray-700">
         <button
           onClick={handleLogout}
-          className="group flex items-center w-full px-3 py-2 text-sm font-medium text-gray-600 rounded-md hover:bg-gray-50 hover:text-gray-900 transition-colors"
+          className={`group flex items-center w-full px-3 py-2 text-sm font-medium rounded-md transition-colors ${
+              darkMode 
+              ? 'text-gray-300 hover:bg-gray-800 hover:text-white'
+              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+          }`}
         >
-          <ArrowRightOnRectangleIcon className="mr-3 h-5 w-5 text-gray-400 group-hover:text-gray-500" />
+          <ArrowRightOnRectangleIcon className={`mr-3 h-5 w-5 ${darkMode ? 'text-gray-400' : 'text-gray-400 group-hover:text-gray-500'}`} />
           Logout
         </button>
       </div>

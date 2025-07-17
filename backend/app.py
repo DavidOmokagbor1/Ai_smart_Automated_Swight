@@ -15,6 +15,9 @@ import requests
 import threading
 import time
 
+# Import advanced AI models
+from ai_models import get_ai_models
+
 # Load environment variables
 load_dotenv()
 
@@ -497,39 +500,16 @@ def init_db():
 # Initialize database
 init_db()
 
-# AI Models
-def load_ai_models():
-    try:
-        # Load pre-trained models if they exist
-        if os.path.exists('occupancy_model.pkl'):
-            with open('occupancy_model.pkl', 'rb') as f:
-                return pickle.load(f)
-        else:
-            # Create a simple model for demo
-            model = RandomForestClassifier(n_estimators=10, random_state=42)
-            # Train with dummy data
-            X = np.random.rand(100, 5)  # 5 features
-            y = np.random.randint(0, 2, 100)  # Binary occupancy
-            model.fit(X, y)
-            return model
-    except Exception as e:
-        logger.error(f"Error loading AI models: {e}")
-        return None
-
-# Load AI models
-ai_model = load_ai_models()
+# Initialize advanced AI models
+ai_models = get_ai_models()
+advanced_occupancy_predictor = ai_models['occupancy_predictor']
+advanced_energy_optimizer = ai_models['energy_optimizer']
+user_behavior_learner = ai_models['behavior_learner']
+advanced_schedule_optimizer = ai_models['schedule_optimizer']
 
 # AI Mode state
 ai_mode_enabled = False
 
-
-user_patterns = {
-    'living_room': {'morning': 0.8, 'afternoon': 0.3, 'evening': 0.9, 'night': 0.1},
-    'kitchen': {'morning': 0.9, 'afternoon': 0.4, 'evening': 0.7, 'night': 0.2},
-    'bedroom': {'morning': 0.6, 'afternoon': 0.1, 'evening': 0.8, 'night': 0.9},
-    'bathroom': {'morning': 0.8, 'afternoon': 0.2, 'evening': 0.3, 'night': 0.4},
-    'office': {'morning': 0.7, 'afternoon': 0.9, 'evening': 0.5, 'night': 0.1}
-}
 
 def get_time_of_day():
     """Get current time of day category"""
@@ -544,96 +524,58 @@ def get_time_of_day():
         return 'night'
 
 def predict_occupancy(room):
-    """Predict if a room will be occupied based on time and patterns"""
+    """Predict if a room will be occupied using advanced AI model"""
     try:
-        time_of_day = get_time_of_day()
-        base_probability = user_patterns[room][time_of_day]
-        
-        # Add some randomness for demo, but make it more predictable
-        noise = np.random.normal(0, 0.05)  # Reduced noise for more consistent behavior
-        probability = max(0, min(1, base_probability + noise))
-        
-        # Log the prediction for debugging
-        logger.info(f"AI Prediction for {room}: {probability:.2f} (base: {base_probability:.2f}, time: {time_of_day})")
-        
-        return probability > 0.5
+        now = datetime.now()
+        # Optionally, get weather and user activity data
+        weather_data = get_weather_data()
+        # For demo, user_activity can be None or fetched from logs
+        user_activity = None
+        prob = advanced_occupancy_predictor.predict(now.isoformat(), room, weather_data, user_activity)
+        logger.info(f"Advanced AI Prediction for {room}: {prob:.2f}")
+        return prob > 0.5
     except Exception as e:
-        logger.error(f"Error in predict_occupancy for {room}: {e}")
-        return False  # Default to not occupied if there's an error
+        logger.error(f"Error in advanced predict_occupancy for {room}: {e}")
+        return False
 
 def optimize_brightness(room, current_brightness):
-    """Optimize brightness based on natural light, weather, and occupancy"""
+    """Optimize brightness using advanced energy optimizer"""
     try:
-        time_of_day = get_time_of_day()
-        
-        # Get weather-based adjustments
-        weather_adjustment = get_weather_lighting_adjustment()
-        natural_light_factor = get_natural_light_factor()
-        
-        # Base natural light factor by time of day
-        natural_light_factor_time = {
-            'morning': 0.8,
-            'afternoon': 0.9,
-            'evening': 0.3,
-            'night': 0.1
-        }
-        
-        # Combine time and weather factors
-        combined_natural_light = natural_light_factor * natural_light_factor_time[time_of_day]
-        
-        # Calculate optimized brightness
-        base_brightness = current_brightness if current_brightness > 0 else 80
-        weather_optimized = int(base_brightness * weather_adjustment)
-        natural_light_optimized = int(weather_optimized * (1 - combined_natural_light * 0.4))
-        
-        # Room-specific adjustments
-        room_adjustments = {
-            'living_room': 1.0,  # Standard
-            'kitchen': 1.1,      # Slightly brighter for cooking
-            'bedroom': 0.8,      # Dimmer for comfort
-            'bathroom': 1.2,     # Brighter for safety
-            'office': 1.0        # Standard
-        }
-        
-        final_brightness = int(natural_light_optimized * room_adjustments.get(room, 1.0))
-        
-        # Ensure minimum and maximum brightness
-        optimized = max(20, min(100, final_brightness))
-        
-        logger.info(f"AI Brightness optimization for {room}: {current_brightness} -> {optimized}")
+        now = datetime.now()
+        weather_data = get_weather_data()
+        natural_light_level = get_natural_light_factor()
+        # Get occupancy probability
+        occupancy_prob = advanced_occupancy_predictor.predict(now.isoformat(), room, weather_data, None)
+        # Optionally, get user preferences
+        user_preferences = None
+        optimized = advanced_energy_optimizer.optimize_brightness_advanced(
+            room, now, natural_light_level, occupancy_prob, weather_data, user_preferences
+        )
+        logger.info(f"Advanced AI Brightness optimization for {room}: {current_brightness} -> {optimized}")
         return optimized
     except Exception as e:
-        logger.error(f"Error in optimize_brightness for {room}: {e}")
-        return 80  # Default brightness if there's an error
+        logger.error(f"Error in advanced optimize_brightness for {room}: {e}")
+        return 80
 
 def ai_control_lights():
-    """AI-powered light control"""
+    """AI-powered light control using advanced models"""
     if not ai_mode_enabled:
         return
-    
     try:
         current_time = datetime.now()
-        time_of_day = get_time_of_day()
-        
-        logger.info(f"AI Control running at {current_time.strftime('%H:%M:%S')} ({time_of_day})")
-        
+        logger.info(f"AI Control running at {current_time.strftime('%H:%M:%S')}")
         for room in lights_state:
             try:
                 # Predict occupancy
                 will_be_occupied = predict_occupancy(room)
-                
                 if will_be_occupied:
                     # Turn on lights with optimized brightness
                     current_brightness = lights_state[room]['brightness']
                     optimized_brightness = optimize_brightness(room, current_brightness)
-                    
                     if lights_state[room]['status'] == 'off':
                         lights_state[room]['status'] = 'on'
                         lights_state[room]['brightness'] = optimized_brightness
-                        
                         logger.info(f"AI turned ON lights in {room} (brightness: {optimized_brightness})")
-                        
-                        # Emit socket event with error handling
                         try:
                             socketio.emit('light_update', {
                                 'room': room,
@@ -641,13 +583,11 @@ def ai_control_lights():
                             })
                         except Exception as socket_error:
                             logger.warning(f"Socket emit failed for light update: {socket_error}")
-                        
-                        # Emit AI prediction event with error handling
                         try:
                             socketio.emit('ai_prediction', {
                                 'room': room,
                                 'prediction': 'occupied',
-                                'confidence': user_patterns[room][time_of_day]
+                                'confidence': 1.0  # Optionally, pass probability
                             })
                         except Exception as socket_error:
                             logger.warning(f"Socket emit failed for AI prediction: {socket_error}")
@@ -656,10 +596,7 @@ def ai_control_lights():
                     if lights_state[room]['status'] == 'on':
                         lights_state[room]['status'] = 'off'
                         lights_state[room]['brightness'] = 0
-                        
                         logger.info(f"AI turned OFF lights in {room} (no occupancy predicted)")
-                        
-                        # Emit socket event with error handling
                         try:
                             socketio.emit('light_update', {
                                 'room': room,
@@ -667,7 +604,6 @@ def ai_control_lights():
                             })
                         except Exception as socket_error:
                             logger.warning(f"Socket emit failed for light update: {socket_error}")
-                        
                         try:
                             socketio.emit('auto_off', {
                                 'room': room,
@@ -1085,7 +1021,7 @@ def get_ai_status():
         predictions = {}
         for room in lights_state:
             try:
-                occupancy_prob = user_patterns[room][time_of_day]
+                occupancy_prob = advanced_occupancy_predictor.predict(current_time.isoformat(), room, weather_data, None)
                 predictions[room] = {
                     'occupancy_probability': round(occupancy_prob * 100, 1),
                     'predicted_occupied': occupancy_prob > 0.5,
@@ -1110,7 +1046,7 @@ def get_ai_status():
             'current_time': current_time.isoformat(),
             'time_of_day': time_of_day,
             'predictions': predictions,
-            'user_patterns': user_patterns,
+            'user_patterns': user_behavior_learner.get_user_patterns(), # Assuming user_behavior_learner has this method
             'weather': {
                 'data': weather_data,
                 'lighting_adjustment': round(weather_adjustment, 2),
@@ -1141,7 +1077,7 @@ def test_ai_mode():
                     'current_brightness': current_brightness,
                     'optimized_brightness': optimized_brightness,
                     'time_of_day': time_of_day,
-                    'base_probability': user_patterns[room][time_of_day]
+                    'base_probability': advanced_occupancy_predictor.predict(current_time.isoformat(), room, get_weather_data(), None) # Use advanced predictor
                 }
             except Exception as room_error:
                 logger.error(f"Error testing AI for room {room}: {room_error}")
@@ -1611,6 +1547,133 @@ def not_found(error):
 def internal_error(error):
     logger.error(f"Internal server error: {error}")
     return jsonify({'error': 'Internal server error'}), 500
+
+# Authentication endpoints
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    """User login endpoint"""
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+        
+        # For demo purposes, accept any credentials
+        # In production, validate against database
+        if username and password:
+            # Create user object
+            user = {
+                'id': 1,
+                'username': username,
+                'name': username.title(),
+                'email': f"{username}@smarthome.com",
+                'role': 'home_owner',
+                'preferences': {
+                    'light_preferences': {
+                        'default_brightness': 80,
+                        'favorite_color_temperature': 'warm'
+                    },
+                    'notifications': {
+                        'email': True,
+                        'push': True
+                    }
+                }
+            }
+            
+            # Generate simple token (in production, use JWT)
+            token = f"token_{username}_{int(time.time())}"
+            
+            return jsonify({
+                'user': user,
+                'token': token,
+                'message': 'Login successful'
+            }), 200
+        else:
+            return jsonify({'message': 'Invalid credentials'}), 401
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        return jsonify({'message': 'Login failed'}), 500
+
+@app.route('/api/auth/verify', methods=['GET'])
+def verify_token():
+    """Verify authentication token"""
+    try:
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({'message': 'No token provided'}), 401    
+        token = auth_header.split(' ')[1]
+        
+        # For demo purposes, accept any token
+        # In production, validate JWT token
+        if token.startswith('token_'):
+            # Extract username from token
+            username = token.split('_')[1]
+            user = {
+                'id': 1,
+                'username': username,
+                'name': username.title(),
+                'email': f"{username}@smarthome.com",
+                'role': 'home_owner',
+                'preferences': {
+                    'light_preferences': {
+                        'default_brightness': 80,
+                        'favorite_color_temperature': 'warm'
+                    },
+                    'notifications': {
+                        'email': True,
+                        'push': True
+                    }
+                }
+            }
+            return jsonify(user), 200
+        else:
+            return jsonify({'message': 'Invalid token'}), 401
+    except Exception as e:
+        logger.error(f"Token verification error: {e}")
+        return jsonify({'message': 'Token verification failed'}), 500
+
+@app.route('/api/auth/logout', methods=['POST'])
+def logout():
+    """User logout endpoint"""
+    try:
+        # In production, invalidate token
+        return jsonify({'message': 'Logout successful'}), 200
+    except Exception as e:
+        logger.error(f"Logout error: {e}")
+        return jsonify({'message': 'Logout failed'}), 500
+
+@app.route('/api/auth/profile', methods=['PUT'])
+def update_profile():
+    """Update user profile"""
+    try:
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({'message': 'No token provided'}), 401     
+        data = request.get_json()
+        
+        # Update user profile (in production, save to database)
+        user = {
+            'id': 1,
+            'username': data.get('username', 'user'),
+            'name': data.get('name', 'User'),
+            'email': data.get('email', 'user@smarthome.com'),
+            'role': data.get('role', 'ner'),
+            'preferences': {
+                'light_preferences': {
+                    'default_brightness': 80,
+                    'favorite_color_temperature': 'warm'
+                },
+                'notifications': {
+                    'email': True,
+                    'push': True
+                }
+            }
+        }
+        
+        return jsonify(user), 200
+        
+    except Exception as e:
+        logger.error(f"Profile update error: {e}")
+        return jsonify({'message': 'Profile update failed'}), 500
 
 if __name__ == '__main__':
     logger.info("🚀 Starting AI Smart Light Control System...")
