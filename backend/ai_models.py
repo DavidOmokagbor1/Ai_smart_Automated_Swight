@@ -818,11 +818,24 @@ def generate_enhanced_training_data():
     
     return sample_data
 
-# Train the advanced model with enhanced data
-if not advanced_occupancy_predictor.is_trained:
-    enhanced_data = generate_enhanced_training_data()
-    accuracy = advanced_occupancy_predictor.train(enhanced_data)
-    logger.info(f"Advanced AI Model trained with {len(enhanced_data)} samples. Accuracy: {accuracy:.3f}")
+# Train the advanced model with enhanced data - MOVED TO init_models
+# if not advanced_occupancy_predictor.is_trained:
+#    enhanced_data = generate_enhanced_training_data()
+#    accuracy = advanced_occupancy_predictor.train(enhanced_data)
+#    logger.info(f"Advanced AI Model trained with {len(enhanced_data)} samples. Accuracy: {accuracy:.3f}")
+
+def init_models():
+    """Initialize and train models if necessary"""
+    if not advanced_occupancy_predictor.is_trained:
+        logger.info("Starting AI model training...")
+        try:
+            enhanced_data = generate_enhanced_training_data()
+            accuracy = advanced_occupancy_predictor.train(enhanced_data)
+            logger.info(f"Advanced AI Model trained with {len(enhanced_data)} samples. Accuracy: {accuracy:.3f}")
+        except Exception as e:
+            logger.error(f"Error initializing AI models: {e}")
+    else:
+        logger.info("AI models already trained and loaded.")
 
 # Export models for use in main application
 def get_ai_models():

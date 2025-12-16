@@ -16,7 +16,7 @@ import threading
 import time
 
 # Import advanced AI models
-from ai_models import get_ai_models
+from ai_models import get_ai_models, init_models
 
 # Load environment variables
 load_dotenv()
@@ -1685,6 +1685,10 @@ if __name__ == '__main__':
     init_sample_logs()
     
     # Start background threads
+    # Initialize AI models in background (non-blocking)
+    ai_init_thread = threading.Thread(target=init_models, daemon=True)
+    ai_init_thread.start()
+
     schedule_thread = threading.Thread(target=schedule_execution_loop, daemon=True)
     schedule_thread.start()
     
