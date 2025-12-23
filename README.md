@@ -204,13 +204,7 @@ The project includes a native mobile app built with React Native and Expo:
 
 See [MOBILE_APP_SETUP.md](MOBILE_APP_SETUP.md) for setup instructions.
 
-## 🤝 Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
 
 ## 📝 License
 
@@ -222,9 +216,3 @@ MIT License
 
 - GitHub: [@DavidOmokagbor1](https://github.com/DavidOmokagbor1)
 
-## 🙏 Acknowledgments
-
-- **OpenWeatherMap API** for weather data
-- **React Community** for the amazing frontend framework
-- **Flask Community** for the robust backend framework
-- **Expo** for mobile development platform
