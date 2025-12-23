@@ -47,8 +47,8 @@ A revolutionary AI-powered smart lighting system that combines IoT sensors, mach
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Python 3.9+
-- Node.js 16+
+- Python 3.10+
+- Node.js 18+
 - npm or yarn
 
 ### Installation
@@ -71,62 +71,82 @@ cd ../frontend
 npm install
 ```
 
-4. **Start the application**
+4. **Set up environment variables**
 ```bash
-# From project root
-./start.sh
+# Backend - Copy example and configure
+cd backend
+cp env.example .env
+# Edit .env with your configuration
+
+# Frontend - Environment variables are in .env.development and .env.production
 ```
 
-Or start services individually:
+5. **Start the application**
 ```bash
 # Backend (Terminal 1)
-cd backend && python3 app.py
+cd backend
+python3 app.py
 
 # Frontend (Terminal 2)
-cd frontend && npm start
+cd frontend
+npm start
 ```
 
-5. **Access the application**
+6. **Access the application**
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:5000
 
 ## 🌐 Deployment
 
 ### Production URLs
-- **Frontend (Vercel):** https://energy-savings-system.vercel.app
+- **Frontend (Vercel):** https://ai-smart-automated-swight.vercel.app
 - **Backend API (Render):** https://ai-smart-automated-swight.onrender.com
 
 ### Deployment Status
 - ✅ **Frontend**: Deployed and live on Vercel
 - ✅ **Backend**: Deployed and live on Render
+- ✅ **Mobile App**: Available via Expo (iOS/Android)
 - ✅ **WebSocket Support**: Enabled via Gunicorn + Eventlet
-- ✅ **CORS**: Configured for production domains
+- ✅ **CORS**: Configured for all Vercel domains (including preview URLs)
+- ✅ **24/7 Uptime**: Keep-alive solution implemented
 
 ### Deployment Configuration
-- **Frontend**: Configured via `vercel.json` in project root
+- **Frontend**: Configured via `vercel.json` in project root and `frontend/vercel.json`
 - **Backend**: Configured via `render.yaml` in project root
 - **Environment Variables**: Set in respective platform dashboards
 
 ### Deployment Details
-- **Frontend Framework**: Create React App
+- **Frontend Framework**: Create React App (React 18)
 - **Backend Framework**: Flask with Socket.IO
+- **Mobile Framework**: React Native with Expo
 - **WebSocket**: Eventlet worker for real-time communication
-- **Database**: SQLite (production-ready for small to medium scale)
-- **Python Version**: 3.10.12
+- **Database**: SQLite with SQLAlchemy ORM
+- **Python Version**: 3.10+ (see `.python-version`)
 - **Node Version**: 18.0.0+
 
-### Environment Variables Required
+### Environment Variables
 
 **Vercel (Frontend):**
-- `REACT_APP_API_URL`: Backend API URL
-- `REACT_APP_SOCKET_URL`: WebSocket URL
+- `REACT_APP_API_URL`: Backend API URL (defaults to Render URL in production)
+- `REACT_APP_SOCKET_URL`: WebSocket URL (defaults to Render URL in production)
 
 **Render (Backend):**
-- `FLASK_ENV`: production
-- `SECRET_KEY`: Flask secret key (set in dashboard)
-- `ALLOWED_ORIGINS`: Comma-separated list of allowed origins
-- `WEATHER_API_KEY`: OpenWeatherMap API key (optional)
-- `WEATHER_CITY`: Default city for weather data
+- `FLASK_ENV`: `production`
+- `SECRET_KEY`: Flask secret key (required)
+- `ALLOWED_ORIGINS`: Comma-separated list of allowed origins (auto-configured for Vercel)
+- `WEATHER_API_KEY`: OpenWeatherMap API key (optional, for weather features)
+- `WEATHER_CITY`: Default city for weather data (optional)
+- `WEATHER_LAT`: Latitude for weather (optional, more accurate than city)
+- `WEATHER_LON`: Longitude for weather (optional)
+
+**Mobile App (Expo):**
+- `EXPO_PUBLIC_API_URL`: Backend API URL
+- `EXPO_PUBLIC_SOCKET_URL`: WebSocket URL
+
+### Deployment Documentation
+- 📘 [Vercel Deployment Guide](VERCEL_DEPLOYMENT.md)
+- 📘 [Mobile App Setup Guide](MOBILE_APP_SETUP.md)
+- 📘 [Keep-Alive Setup Guide](KEEP_ALIVE_SETUP.md) - Keep your Render backend running 24/7
 
 ## 📁 Project Structure
 
@@ -135,20 +155,36 @@ Ai_smart_Automated_Swight/
 ├── backend/                 # Flask API server
 │   ├── app.py              # Main Flask application
 │   ├── ai_models.py        # AI prediction models
+│   ├── keep_alive.py       # Keep-alive script for Render
 │   ├── requirements.txt    # Python dependencies
-│   └── instance/          # Database files
-├── frontend/               # React frontend
+│   ├── runtime.txt         # Python version specification
+│   ├── start_production.sh # Production start script
+│   └── instance/           # Database files (gitignored)
+├── frontend/               # React web frontend
 │   ├── src/
 │   │   ├── components/    # React components
 │   │   │   ├── Dashboard.js
 │   │   │   ├── LightControl.js
 │   │   │   ├── Weather.js
 │   │   │   ├── Statistics.js
-│   │   │   └── PresentationMode.js
+│   │   │   ├── Settings.js
+│   │   │   └── ... (all components)
+│   │   ├── config.js      # API configuration
 │   │   └── App.js
+│   ├── vercel.json        # Vercel deployment config
 │   └── package.json
-├── docs/                   # Documentation
-├── start.sh               # Quick start script
+├── mobile/                 # React Native mobile app
+│   ├── screens/           # Mobile app screens
+│   ├── App.js            # Mobile app entry point
+│   ├── config.js         # Mobile API configuration
+│   └── package.json
+├── .github/
+│   └── workflows/
+│       └── keep-alive.yml # GitHub Actions keep-alive
+├── docs/                  # Documentation
+│   └── SYSTEM_OVERVIEW.md
+├── render.yaml            # Render deployment config
+├── vercel.json            # Root Vercel config
 └── README.md
 ```
 
@@ -161,12 +197,22 @@ Ai_smart_Automated_Swight/
 - **Weather API**: OpenWeatherMap integration
 - **Database**: SQLite with SQLAlchemy ORM
 
-### **Frontend (React)**
+### **Frontend (React Web App)**
 - **React 18**: Modern UI framework
 - **Tailwind CSS**: Styling and responsive design
 - **Framer Motion**: Smooth animations
 - **Socket.IO Client**: Real-time updates
 - **Recharts**: Data visualization
+- **React Router**: Navigation
+- **React Hot Toast**: Notifications
+
+### **Mobile App (React Native/Expo)**
+- **React Native**: Cross-platform mobile framework
+- **Expo**: Development and deployment platform
+- **React Navigation**: Mobile navigation
+- **Socket.IO Client**: Real-time updates
+- **Victory Native**: Mobile charts
+- **Dark Theme**: Consistent with web app
 
 ## 🔧 API Endpoints
 
@@ -191,6 +237,10 @@ Ai_smart_Automated_Swight/
 - `GET /api/statistics` - Energy statistics
 - `GET /api/activity/logs` - Activity logs
 - `GET /api/schedules` - Scheduling data
+
+### Settings Endpoints
+- `GET /api/settings` - Get system settings
+- `POST /api/settings` - Update system settings
 
 ## 🎬 Presentation Features
 
@@ -283,9 +333,32 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Backend Version**: Latest (see requirements.txt)
 - **Last Updated**: December 2024
 
+## 📱 Mobile App
+
+The project includes a native mobile app built with React Native and Expo:
+
+- **Cross-platform**: Works on both iOS and Android
+- **Expo Go**: Preview instantly without building
+- **All Features**: Dashboard, Light Control, Weather, Statistics, etc.
+- **Real-time Updates**: WebSocket support for live data
+- **Dark Theme**: Consistent with web application
+
+See [MOBILE_APP_SETUP.md](MOBILE_APP_SETUP.md) for setup instructions.
+
 ## 🔄 Recent Updates
-- ✅ Fixed merge conflicts in deployment configurations
-- ✅ Updated deployment documentation
-- ✅ Improved error handling in API endpoints
-- ✅ Enhanced code comments and documentation
-- ✅ Updated version numbers 
+
+- ✅ **Git History Cleanup**: Consolidated 60 commits into 9 logical commits
+- ✅ **Repository Cleanup**: Removed 45+ unnecessary files (demo scripts, redundant guides)
+- ✅ **Mobile App**: Added React Native/Expo mobile application
+- ✅ **24/7 Uptime**: Implemented keep-alive solution for Render backend
+- ✅ **Weather API**: Enhanced with OpenWeatherMap integration
+- ✅ **CORS Fixes**: Improved CORS handling for all Vercel domains
+- ✅ **Error Handling**: Enhanced error handling and retry logic
+- ✅ **Documentation**: Streamlined and organized documentation
+
+## 📚 Additional Documentation
+
+- 📘 [System Overview](docs/SYSTEM_OVERVIEW.md) - Complete system architecture
+- 📘 [Vercel Deployment Guide](VERCEL_DEPLOYMENT.md) - Frontend deployment
+- 📘 [Mobile App Setup](MOBILE_APP_SETUP.md) - Mobile app setup and preview
+- 📘 [Keep-Alive Setup](KEEP_ALIVE_SETUP.md) - Keep Render backend running 24/7 
