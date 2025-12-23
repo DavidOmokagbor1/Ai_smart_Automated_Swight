@@ -1,0 +1,2251 @@
+"""
+AI Smart Automated Light Control System - Backend API Server
+
+This Flask application provides a RESTful API and WebSocket server for managing
+AI-powered smart lighting systems. It includes:
+- Real-time light control via REST API and WebSocket
+- AI-powered occupancy prediction and energy optimization
+- Weather-based lighting adjustments
+- Automated scheduling system
+- Energy monitoring and analytics
+
+Author: David Omokagbor
+Version: 1.1.0
+"""
+
+import os
+from flask import Flask, jsonify, request
+from flask_socketio import SocketIO, emit
+from flask_cors import CORS
+from functools import wraps
+import json
+import sqlite3
+from datetime import datetime, timedelta
+import random
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+import pickle
+import logging
+from dotenv import load_dotenv
+import requests
+from requests.adapters import HTTPAdapter
+try:
+    from urllib3.util.retry import Retry
+except ImportError:
+    from requests.packages.urllib3.util.retry import Retry
+import threading
+import time
+
+# Import advanced AI models for occupancy prediction and energy optimization
+from ai_models import get_ai_models, init_models
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Configure logging for debugging and monitoring
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Initialize Flask application
+app = Flask(__name__)
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
+
+# Configure CORS (Cross-Origin Resource Sharing) for production
+# Allows requests from Vercel deployment domains (including preview URLs) and localhost for development
+allowed_origins_env = os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000,https://ai-smart-automated-swight-hl81570f7-davidomokagbor1s-projects.vercel.app,https://ai-smart-automated-swight.vercel.app,https://energy-savings-system.vercel.app,https://energy-savings-system-git-main-davidomokagbor1s-projects.vercel.app')
+allowed_origins_list = [origin.strip() for origin in allowed_origins_env.split(',')]
+
+# Function to check if origin is allowed (supports Vercel preview URLs dynamically)
+def is_origin_allowed(origin):
+    """Check if origin is allowed, including all Vercel preview deployments"""
+    if not origin:
+        return False
+    
+    # Check exact matches from environment variable
+    if origin in allowed_origins_list:
+        return True
+    
+    # Allow all Vercel preview deployments (*.vercel.app)
+    if origin.endswith('.vercel.app'):
+        logger.info(f'✅ Allowing Vercel deployment: {origin}')
+        return True
+    
+    # Allow localhost for development
+    if 'localhost' in origin or '127.0.0.1' in origin:
+        return True
+    
+    logger.warning(f'❌ Rejecting origin: {origin}')
+    return False
+
+# Build complete list of allowed origins (explicit + all vercel.app)
+# Flask-CORS works better with explicit list than function
+all_allowed_origins = allowed_origins_list.copy()
+# Note: We'll use a wildcard approach for Vercel since we can't list all preview URLs
+
+# Configure CORS - use resources parameter for better control
+CORS(app, 
+     resources={
+         r"/api/*": {
+             "origins": "*",  # Allow all origins for API endpoints (we validate in is_origin_allowed)
+             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+             "allow_headers": ["Content-Type", "Authorization"],
+             "supports_credentials": True
+         }
+     },
+     supports_credentials=True)
+
+# Initialize Socket.IO for real-time bidirectional communication
+# Uses Eventlet async mode for WebSocket support in production (Gunicorn)
+# Allow all origins for Socket.IO and validate in connect handler
+socketio = SocketIO(app, cors_allowed_origins='*', allow_credentials=True, async_mode='eventlet')
+
+# Production configuration based on environment variable
+if os.getenv('FLASK_ENV') == 'production':
+    app.config['DEBUG'] = False
+    app.config['TESTING'] = False
+else:
+    app.config['DEBUG'] = True
+
+# Weather API Configuration
+# Uses OpenWeatherMap API for real-time weather data
+# Falls back to demo data if API key is not configured
+WEATHER_API_KEY = os.getenv('WEATHER_API_KEY', 'demo_key')
+WEATHER_CITY = os.getenv('WEATHER_CITY', 'New York')
+WEATHER_LAT = os.getenv('WEATHER_LAT', None)  # Latitude for more accurate location
+WEATHER_LON = os.getenv('WEATHER_LON', None)  # Longitude for more accurate location
+WEATHER_BASE_URL = "https://api.openweathermap.org/data/2.5/weather"
+WEATHER_FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
+
+# Create a session with retry strategy for weather API calls
+# Handles DNS resolution errors and network timeouts gracefully
+# Note: DNS errors won't be retried (they need network fix, not retry)
+weather_session = requests.Session()
+retry_strategy = Retry(
+    total=2,  # Reduced retries - DNS errors won't resolve with retries
+    backoff_factor=0.5,  # Shorter wait between retries
+    status_forcelist=[429, 500, 502, 503, 504],  # Retry on these status codes
+    allowed_methods=["GET"],  # Only retry GET requests
+    connect=2,  # Retry connection errors (but DNS errors will fail fast)
+    read=2  # Retry read timeouts
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+weather_session.mount("https://", adapter)
+weather_session.mount("http://", adapter)
+
+# Alternative: WeatherAPI.com (more accurate, free tier available)
+# Uncomment to use WeatherAPI.com instead of OpenWeatherMap
+# WEATHERAPI_KEY = os.getenv('WEATHERAPI_KEY', None)
+# WEATHERAPI_BASE_URL = "https://api.weatherapi.com/v1/current.json"
+# WEATHERAPI_FORECAST_URL = "https://api.weatherapi.com/v1/forecast.json"
+
+# Weather cache to avoid excessive API calls
+# Caches weather data for 5 minutes to reduce API usage and improve performance
+weather_cache = {
+    'data': None,
+    'last_update': None,
+    'cache_duration': 300  # 5 minutes in seconds
+}
+
+# Real-time weather update thread
+# Background thread that periodically updates weather data
+weather_update_thread = None
+weather_update_interval = 300  # Update every 5 minutes
+
+# Schedule execution tracking
+# Prevents duplicate schedule executions by tracking executed events
+schedule_execution_tracker = {}
+
+# Initialize with some sample activity logs
+def init_sample_logs():
+    """Initialize with sample activity logs for demonstration"""
+    if not hasattr(app, 'activity_logs'):
+        app.activity_logs = []
+        
+        # Add sample logs
+        sample_logs = [
+            {
+                'id': 1,
+                'timestamp': (datetime.now() - timedelta(minutes=2)).isoformat(),
+                'action': 'light_toggle',
+                'room': 'living_room',
+                'user': 'admin',
+                'details': {
+                    'previous_status': 'off',
+                    'new_status': 'on',
+                    'brightness': 80,
+                    'method': 'manual_control'
+                },
+                'ip_address': '192.168.1.100'
+            },
+            {
+                'id': 2,
+                'timestamp': (datetime.now() - timedelta(minutes=5)).isoformat(),
+                'action': 'brightness_adjust',
+                'room': 'kitchen',
+                'user': 'admin',
+                'details': {
+                    'previous_brightness': 60,
+                    'new_brightness': 90,
+                    'status': 'on',
+                    'method': 'manual_control'
+                },
+                'ip_address': '192.168.1.100'
+            },
+            {
+                'id': 3,
+                'timestamp': (datetime.now() - timedelta(minutes=10)).isoformat(),
+                'action': 'ai_mode_toggle',
+                'room': None,
+                'user': 'admin',
+                'details': {
+                    'previous_state': False,
+                    'new_state': True,
+                    'method': 'manual_control'
+                },
+                'ip_address': '192.168.1.100'
+            },
+            {
+                'id': 4,
+                'timestamp': (datetime.now() - timedelta(minutes=15)).isoformat(),
+                'action': 'bulk_light_control',
+                'room': None,
+                'user': 'admin',
+                'details': {
+                    'action': 'on',
+                    'brightness': 100,
+                    'affected_rooms': ['living_room', 'kitchen', 'bedroom', 'bathroom', 'office'],
+                    'total_rooms': 5,
+                    'method': 'bulk_control'
+                },
+                'ip_address': '192.168.1.100'
+            },
+            {
+                'id': 5,
+                'timestamp': (datetime.now() - timedelta(minutes=20)).isoformat(),
+                'action': 'color_temperature_change',
+                'room': 'bedroom',
+                'user': 'admin',
+                'details': {
+                    'previous_temperature': 'warm',
+                    'new_temperature': 'cool',
+                    'method': 'manual_control'
+                },
+                'ip_address': '192.168.1.100'
+            }
+        ]
+        
+        app.activity_logs = sample_logs
+
+def log_activity(action, room=None, details=None, user_id=1, ip_address=None):
+    """Log user activity to database"""
+    try:
+        if ip_address is None:
+            ip_address = request.remote_addr if request else 'unknown'
+        
+        # Create activity log entry
+        activity_log = {
+            'id': random.randint(1000, 9999),
+            'timestamp': datetime.now().isoformat(),
+            'action': action,
+            'room': room,
+            'user': 'admin',
+            'details': details,
+            'ip_address': ip_address
+        }
+        
+        # Store in memory for now (in production, use database)
+        if not hasattr(app, 'activity_logs'):
+            app.activity_logs = []
+        
+        app.activity_logs.insert(0, activity_log)
+        
+        # Keep only last 1000 logs
+        if len(app.activity_logs) > 1000:
+            app.activity_logs = app.activity_logs[:1000]
+        
+        # Emit real-time update
+        socketio.emit('activity_logged', activity_log)
+        
+        logger.info(f"Activity logged: {action} in {room} - {details}")
+        
+    except Exception as e:
+        logger.error(f"Error logging activity: {e}")
+
+def get_weather_data():
+    """Get current weather data with caching"""
+    current_time = datetime.now()
+    
+    # Return cached data if still valid
+    if (weather_cache['data'] and weather_cache['last_update'] and 
+        (current_time - weather_cache['last_update']).seconds < weather_cache['cache_duration']):
+        return weather_cache['data']
+    
+    try:
+        if WEATHER_API_KEY == 'demo_key':
+            weather_data = {
+                'main': {
+                    'temp': 20,
+                    'humidity': 65,
+                    'pressure': 1013
+                },
+                'weather': [{
+                    'main': 'Clouds',
+                    'description': 'scattered clouds',
+                    'icon': '03d'
+                }],
+                'clouds': {'all': 40},
+                'visibility': 10000,
+                'wind': {'speed': 5, 'deg': 180},
+                'sys': {'sunrise': 1640995200, 'sunset': 1641038400}
+            }
+        else:
+            # Real API call - Use coordinates if available for more accuracy
+            try:
+                params = {
+                    'appid': WEATHER_API_KEY,
+                    'units': 'imperial',
+                    'lang': 'en'
+                }
+                
+                # Use coordinates if available (more accurate than city name)
+                if WEATHER_LAT and WEATHER_LON:
+                    params['lat'] = WEATHER_LAT
+                    params['lon'] = WEATHER_LON
+                    location_str = f"{WEATHER_LAT},{WEATHER_LON}"
+                else:
+                    params['q'] = WEATHER_CITY
+                    location_str = WEATHER_CITY
+                
+                # Use session with retry logic, shorter timeout for DNS (fails fast if DNS broken)
+                # DNS errors won't resolve with retries, so fail fast and use demo data
+                response = weather_session.get(WEATHER_BASE_URL, params=params, timeout=(3, 8))
+                if response.status_code == 200:
+                    weather_data = response.json()
+                    # Add name if not present (for coordinate-based calls)
+                    if 'name' not in weather_data:
+                        weather_data['name'] = WEATHER_CITY
+                    logger.info(f"✅ Successfully fetched weather data for {location_str}")
+                elif response.status_code == 401:
+                    logger.error("❌ Invalid OpenWeatherMap API key. Please check your WEATHER_API_KEY.")
+                    raise Exception("Invalid API key")
+                elif response.status_code == 404:
+                    logger.warning(f"⚠️ Location not found: {location_str}. Using demo data.")
+                    raise Exception("Location not found")
+                else:
+                    logger.warning(f"⚠️ Weather API error: {response.status_code} - {response.text}")
+                    raise Exception(f"API error: {response.status_code}")
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as conn_error:
+                # DNS resolution or connection errors - fail fast and use demo data
+                # DNS errors on Render free tier are common and won't resolve with retries
+                error_msg = str(conn_error)
+                if 'NameResolutionError' in error_msg or 'Failed to resolve' in error_msg:
+                    logger.warning(f"⚠️ Weather API DNS resolution failed (Render network issue): {error_msg[:100]}")
+                else:
+                    logger.warning(f"⚠️ Weather API connection error: {error_msg[:100]}")
+                
+                if weather_cache['data']:
+                    logger.info("📦 Using cached weather data due to connection error")
+                    return weather_cache['data']
+                # Fall back to demo data immediately - DNS errors won't resolve
+                logger.warning("⚠️ No cached data available, using demo data due to connection/DNS error")
+                weather_data = {
+                    'main': {
+                        'temp': 72,
+                        'humidity': 65,
+                        'pressure': 1013,
+                        'feels_like': 70
+                    },
+                    'weather': [{
+                        'main': 'Clouds',
+                        'description': 'scattered clouds',
+                        'icon': '03d'
+                    }],
+                    'clouds': {'all': 40},
+                    'visibility': 10000,
+                    'wind': {'speed': 5, 'deg': 180},
+                    'sys': {'sunrise': 1640995200, 'sunset': 1641038400},
+                    'name': WEATHER_CITY
+                }
+                weather_data = {
+                    'main': {
+                        'temp': 72,
+                        'humidity': 65,
+                        'pressure': 1013,
+                        'feels_like': 70
+                    },
+                    'weather': [{
+                        'main': 'Clouds',
+                        'description': 'scattered clouds',
+                        'icon': '03d'
+                    }],
+                    'clouds': {'all': 40},
+                    'visibility': 10000,
+                    'wind': {'speed': 5, 'deg': 180},
+                    'sys': {'sunrise': 1640995200, 'sunset': 1641038400},
+                    'name': WEATHER_CITY
+                }
+            except Exception as api_error:
+                logger.error(f"❌ Weather API call failed: {api_error}")
+                # Try to use cached data first
+                if weather_cache['data']:
+                    logger.info("📦 Returning cached weather data due to API error")
+                    return weather_cache['data']
+                # Fall back to demo data if no cache available
+                logger.warning("⚠️ No cached data available, using demo data due to API error")
+                weather_data = {
+                    'main': {
+                        'temp': 72,
+                        'humidity': 65,
+                        'pressure': 1013,
+                        'feels_like': 70
+                    },
+                    'weather': [{
+                        'main': 'Clouds',
+                        'description': 'scattered clouds',
+                        'icon': '03d'
+                    }],
+                    'clouds': {'all': 40},
+                    'visibility': 10000,
+                    'wind': {'speed': 5, 'deg': 180},
+                    'sys': {'sunrise': 1640995200, 'sunset': 1641038400},
+                    'name': WEATHER_CITY
+                }
+        # Cache the data
+        weather_cache['data'] = weather_data
+        weather_cache['last_update'] = current_time
+        return weather_data
+    except Exception as e:
+        logger.error(f"❌ Error fetching weather data: {e}", exc_info=True)
+        # Return cached data if available
+        if weather_cache['data']:
+            logger.info("📦 Returning cached weather data due to exception")
+            return weather_cache['data']
+        # Fall back to demo data if no cache available
+        logger.warning("⚠️ No cached data available, returning demo data due to exception")
+        return {
+            'main': {
+                'temp': 72,
+                'humidity': 65,
+                'pressure': 1013,
+                'feels_like': 70
+            },
+            'weather': [{
+                'main': 'Clouds',
+                'description': 'scattered clouds',
+                'icon': '03d'
+            }],
+            'clouds': {'all': 40},
+            'visibility': 10000,
+            'wind': {'speed': 5, 'deg': 180},
+            'sys': {'sunrise': 1640995200, 'sunset': 1641038400},
+            'name': WEATHER_CITY
+        }
+
+def get_weather_lighting_adjustment():
+    """
+    Calculate lighting adjustment factor based on current weather conditions.
+    
+    This function analyzes weather data to determine optimal brightness adjustments:
+    - Rain/Storm: Increase brightness 30-50% for safety
+    - Clear Skies: Decrease brightness 30% to save energy
+    - Cloudy Weather: Increase brightness 20% for visibility
+    - Poor Visibility: Automatic brightness increase
+    
+    Returns:
+        float: Adjustment multiplier (1.0 = no change, >1.0 = brighter, <1.0 = dimmer)
+    """
+    weather_data = get_weather_data()
+    if not weather_data:
+        return 1.0  # No adjustment if weather data unavailable
+    
+    weather_main = weather_data['weather'][0]['main'].lower()
+    weather_desc = weather_data['weather'][0]['description'].lower()
+    clouds = weather_data.get('clouds', {}).get('all', 0)
+    visibility = weather_data.get('visibility', 10000)
+    
+    # Base adjustment factor
+    adjustment = 1.0
+    
+    # Weather condition adjustments
+    if 'rain' in weather_desc or 'drizzle' in weather_desc:
+        adjustment = 1.3  # 30% brighter for rain
+    elif 'snow' in weather_desc:
+        adjustment = 1.4  # 40% brighter for snow
+    elif 'thunderstorm' in weather_desc:
+        adjustment = 1.5  # 50% brighter for storms
+    elif 'fog' in weather_desc or 'mist' in weather_desc:
+        adjustment = 1.2  # 20% brighter for fog
+    elif 'clear' in weather_desc and clouds < 20:
+        adjustment = 0.7  # 30% dimmer for clear skies
+    elif clouds > 80:
+        adjustment = 1.2  # 20% brighter for cloudy skies
+    
+    # Visibility adjustments
+    if visibility < 5000:  # Poor visibility
+        adjustment *= 1.2
+    
+    # Time of day adjustments
+    current_hour = datetime.now().hour
+    if 6 <= current_hour <= 18:  # Daytime
+        if weather_main == 'clear':
+            adjustment *= 0.8  # Even dimmer during clear daytime
+    
+    return max(0.5, min(1.5, adjustment))  # Clamp between 0.5 and 1.5
+
+def get_natural_light_factor():
+    """Get natural light factor based on weather and time"""
+    weather_data = get_weather_data()
+    if not weather_data:
+        return 0.5  # Default factor
+    
+    current_hour = datetime.now().hour
+    weather_main = weather_data['weather'][0]['main'].lower()
+    clouds = weather_data.get('clouds', {}).get('all', 0)
+    
+    # Base natural light factor by time of day
+    if 6 <= current_hour <= 10:  # Early morning
+        base_factor = 0.6
+    elif 10 <= current_hour <= 16:  # Midday
+        base_factor = 0.9
+    elif 16 <= current_hour <= 20:  # Late afternoon
+        base_factor = 0.4
+    else:  # Night
+        base_factor = 0.1
+    
+    # Weather adjustments
+    if weather_main == 'clear' and clouds < 30:
+        weather_multiplier = 1.2
+    elif weather_main == 'clouds' and clouds > 70:
+        weather_multiplier = 0.6
+    elif 'rain' in weather_data['weather'][0]['description'].lower():
+        weather_multiplier = 0.3
+    else:
+        weather_multiplier = 0.8
+    
+    return min(1.0, base_factor * weather_multiplier)
+
+def emit_weather_update():
+    """Emit real-time weather update via WebSocket"""
+    try:
+        weather_data = get_weather_data()
+        if weather_data:
+            weather_adjustment = get_weather_lighting_adjustment()
+            natural_light_factor = get_natural_light_factor()
+            
+            weather_update = {
+                'weather': weather_data,
+                'lighting_adjustment': round(weather_adjustment, 2),
+                'natural_light_factor': round(natural_light_factor, 2),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            socketio.emit('weather_update', weather_update)
+            logger.info("Weather update emitted via WebSocket")
+        else:
+            logger.warning("Weather data unavailable, using demo data")
+            
+    except Exception as e:
+        logger.error(f"Error emitting weather update: {e}")
+        # Fall back to demo data
+        try:
+            demo_weather = {
+                'weather': {
+                    'main': {
+                        'temp': 20,
+                        'humidity': 65,
+                        'pressure': 1013
+                    },
+                    'weather': [{
+                        'main': 'Clouds',
+                        'description': 'scattered clouds',
+                        'icon': '03d'
+                    }],
+                    'clouds': {'all': 40},
+                    'visibility': 10000,
+                    'wind': {'speed': 5, 'deg': 180},
+                    'sys': {'sunrise': 1640995200, 'sunset': 1641038400}
+                },
+                'lighting_adjustment': 1.0,
+                'natural_light_factor': 0.32,
+                'timestamp': datetime.now().isoformat()
+            }
+            socketio.emit('weather_update', demo_weather)
+            logger.info("Demo weather update emitted via WebSocket")
+        except Exception as demo_error:
+            logger.error(f"Error emitting demo weather update: {demo_error}")
+
+def weather_update_loop():
+    """Background thread for real-time weather updates"""
+    logger.info("Weather update loop started")
+    while True:
+        try:
+            emit_weather_update()
+            time.sleep(weather_update_interval)  # Update every 5 minutes
+        except Exception as e:
+            logger.error(f"Error in weather update loop: {e}")
+            time.sleep(60)  # Wait 1 minute before retrying
+
+def execute_schedule_event(room, event):
+    """Execute a scheduled event for a room"""
+    try:
+        if event['action'] == 'on':
+            # Apply weather adjustments for brightness
+            base_brightness = event.get('brightness', 100)
+            weather_adjustment = get_weather_lighting_adjustment()
+            adjusted_brightness = int(base_brightness * weather_adjustment)
+            
+            # Update light state
+            if room in lights_state:
+                lights_state[room]['status'] = 'on'
+                lights_state[room]['brightness'] = min(100, max(0, adjusted_brightness))
+                
+                # Emit socket event
+                socketio.emit('light_update', {
+                    'room': room,
+                    'state': lights_state[room],
+                    'source': 'schedule'
+                })
+                
+                logger.info(f"Schedule executed: {room} lights turned ON at {adjusted_brightness}% brightness")
+                
+        elif event['action'] == 'off':
+            if room in lights_state:
+                lights_state[room]['status'] = 'off'
+                lights_state[room]['brightness'] = 0
+                
+                # Emit socket event
+                socketio.emit('light_update', {
+                    'room': room,
+                    'state': lights_state[room],
+                    'source': 'schedule'
+                })
+                
+                logger.info(f"Schedule executed: {room} lights turned OFF")
+                
+    except Exception as e:
+        logger.error(f"Error executing schedule event for {room}: {e}")
+
+def check_and_execute_schedules():
+    """Check current time against schedules and execute events"""
+    try:
+        current_time = datetime.now()
+        current_day = current_time.strftime('%A').lower()
+        current_time_str = current_time.strftime('%H:%M')
+        
+        # Check each room's schedule
+        for room, schedule in schedules.items():
+            if not schedule.get('enabled', False):
+                continue
+                
+            daily_schedule = schedule.get('daily_schedule', {}).get(current_day, [])
+            
+            for event in daily_schedule:
+                event_time = event.get('time', '')
+                event_key = f"{room}_{current_day}_{event_time}"
+                
+                # Check if this event should be executed now
+                if event_time == current_time_str:
+                    # Check if we haven't already executed this event today
+                    if event_key not in schedule_execution_tracker:
+                        execute_schedule_event(room, event)
+                        schedule_execution_tracker[event_key] = current_time
+                        
+                        # Clean up old tracker entries (older than 1 day)
+                        for key, timestamp in list(schedule_execution_tracker.items()):
+                            if (current_time - timestamp).days > 0:
+                                del schedule_execution_tracker[key]
+                                
+    except Exception as e:
+        logger.error(f"Error in schedule execution check: {e}")
+
+def schedule_execution_loop():
+    """Background loop for schedule execution"""
+    while True:
+        try:
+            check_and_execute_schedules()
+            time.sleep(60)  # Check every minute
+        except Exception as e:
+            logger.error(f"Error in schedule execution loop: {e}")
+            time.sleep(60)  # Continue after error
+
+# Database setup
+def init_db():
+    """
+    Initialize SQLite database and create required tables.
+    
+    Creates three main tables:
+    1. lights: Stores current state of lights in each room
+    2. energy_usage: Tracks energy consumption and cost savings
+    3. schedules: Stores automated scheduling configuration for each room
+    """
+    try:
+        # Ensure instance directory exists (works in both local and Render)
+        instance_dir = os.path.join(os.path.dirname(__file__), 'instance')
+        os.makedirs(instance_dir, exist_ok=True)
+        
+        db_path = os.path.join(instance_dir, 'smart_lights.db')
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        
+        # Create lights table: stores current state of all room lights
+        c.execute('''CREATE TABLE IF NOT EXISTS lights
+                     (room TEXT PRIMARY KEY, status TEXT, brightness INTEGER, 
+                      color_temperature TEXT, motion_detected BOOLEAN)''')
+        
+        # Create energy_usage table: tracks daily consumption and savings
+        c.execute('''CREATE TABLE IF NOT EXISTS energy_usage
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, 
+                      daily_consumption REAL, cost_saved REAL, usage_history TEXT)''')
+        
+        # Create schedules table: stores automated scheduling configuration
+        c.execute('''CREATE TABLE IF NOT EXISTS schedules
+                     (room TEXT PRIMARY KEY, enabled BOOLEAN, vacation_mode BOOLEAN,
+                      sunrise_sunset BOOLEAN, daily_schedule TEXT)''')
+        
+        conn.commit()
+        conn.close()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing database: {e}")
+        raise
+
+# Initialize database
+init_db()
+
+# Initialize advanced AI models
+ai_models = get_ai_models()
+advanced_occupancy_predictor = ai_models['occupancy_predictor']
+advanced_energy_optimizer = ai_models['energy_optimizer']
+user_behavior_learner = ai_models['behavior_learner']
+advanced_schedule_optimizer = ai_models['schedule_optimizer']
+
+# AI Mode state
+ai_mode_enabled = False
+
+
+def get_time_of_day():
+    """Get current time of day category"""
+    hour = datetime.now().hour
+    if 6 <= hour < 12:
+        return 'morning'
+    elif 12 <= hour < 17:
+        return 'afternoon'
+    elif 17 <= hour < 22:
+        return 'evening'
+    else:
+        return 'night'
+
+def predict_occupancy(room):
+    """
+    Predict if a room will be occupied using advanced AI model.
+    
+    Uses Random Forest classifier trained on historical data to predict
+    room occupancy with 85-96% accuracy. Considers:
+    - Time of day
+    - Day of week
+    - Weather conditions
+    - Historical usage patterns
+    
+    Args:
+        room (str): Room name to predict occupancy for
+        
+    Returns:
+        bool: True if room is predicted to be occupied, False otherwise
+    """
+    try:
+        now = datetime.now()
+        # Get weather data for context-aware predictions
+        weather_data = get_weather_data()
+        # User activity data can be fetched from logs for more accurate predictions
+        user_activity = None
+        prob = advanced_occupancy_predictor.predict(now.isoformat(), room, weather_data, user_activity)
+        logger.info(f"Advanced AI Prediction for {room}: {prob:.2f} probability")
+        return prob > 0.5
+    except Exception as e:
+        logger.error(f"Error in advanced predict_occupancy for {room}: {e}", exc_info=True)
+        return False
+
+def optimize_brightness(room, current_brightness):
+    """
+    Optimize brightness using advanced energy optimizer AI model.
+    
+    Analyzes multiple factors to determine optimal brightness:
+    - Current time and natural light availability
+    - Weather conditions
+    - Predicted occupancy
+    - Room type and usage patterns
+    - Energy efficiency goals
+    
+    Args:
+        room (str): Room name
+        current_brightness (int): Current brightness level (0-100)
+        
+    Returns:
+        int: Optimized brightness level (0-100)
+    """
+    try:
+        now = datetime.now()
+        weather_data = get_weather_data()
+        natural_light_level = get_natural_light_factor()
+        # Get occupancy probability for context-aware optimization
+        occupancy_prob = advanced_occupancy_predictor.predict(now.isoformat(), room, weather_data, None)
+        # Optionally, get user preferences
+        user_preferences = None
+        optimized = advanced_energy_optimizer.optimize_brightness_advanced(
+            room, now, natural_light_level, occupancy_prob, weather_data, user_preferences
+        )
+        logger.info(f"Advanced AI Brightness optimization for {room}: {current_brightness} -> {optimized}")
+        return optimized
+    except Exception as e:
+        logger.error(f"Error in advanced optimize_brightness for {room}: {e}")
+        return 80
+
+def ai_control_lights():
+    """AI-powered light control using advanced models"""
+    if not ai_mode_enabled:
+        return
+    try:
+        current_time = datetime.now()
+        logger.info(f"AI Control running at {current_time.strftime('%H:%M:%S')}")
+        for room in lights_state:
+            try:
+                # Predict occupancy
+                will_be_occupied = predict_occupancy(room)
+                if will_be_occupied:
+                    # Turn on lights with optimized brightness
+                    current_brightness = lights_state[room]['brightness']
+                    optimized_brightness = optimize_brightness(room, current_brightness)
+                    if lights_state[room]['status'] == 'off':
+                        lights_state[room]['status'] = 'on'
+                        lights_state[room]['brightness'] = optimized_brightness
+                        logger.info(f"AI turned ON lights in {room} (brightness: {optimized_brightness})")
+                        try:
+                            socketio.emit('light_update', {
+                                'room': room,
+                                'state': lights_state[room]
+                            })
+                        except Exception as socket_error:
+                            logger.warning(f"Socket emit failed for light update: {socket_error}")
+                        try:
+                            socketio.emit('ai_prediction', {
+                                'room': room,
+                                'prediction': 'occupied',
+                                'confidence': 1.0  # Optionally, pass probability
+                            })
+                        except Exception as socket_error:
+                            logger.warning(f"Socket emit failed for AI prediction: {socket_error}")
+                else:
+                    # Turn off lights if not occupied
+                    if lights_state[room]['status'] == 'on':
+                        lights_state[room]['status'] = 'off'
+                        lights_state[room]['brightness'] = 0
+                        logger.info(f"AI turned OFF lights in {room} (no occupancy predicted)")
+                        try:
+                            socketio.emit('light_update', {
+                                'room': room,
+                                'state': lights_state[room]
+                            })
+                        except (OSError, IOError) as socket_error:
+                            # Ignore socket cleanup errors (common with Eventlet)
+                            if 'Bad file descriptor' not in str(socket_error):
+                                logger.debug(f"Socket emit failed for light update: {socket_error}")
+                        except Exception as socket_error:
+                            logger.debug(f"Socket emit failed for light update: {socket_error}")
+                        try:
+                            socketio.emit('auto_off', {
+                                'room': room,
+                                'reason': 'AI detected no occupancy'
+                            })
+                        except (OSError, IOError) as socket_error:
+                            # Ignore socket cleanup errors (common with Eventlet)
+                            if 'Bad file descriptor' not in str(socket_error):
+                                logger.debug(f"Socket emit failed for auto_off: {socket_error}")
+                        except Exception as socket_error:
+                            logger.debug(f"Socket emit failed for auto_off: {socket_error}")
+            except Exception as room_error:
+                logger.error(f"Error processing room {room} in AI control: {room_error}")
+                continue
+    except Exception as e:
+        logger.error(f"Error in AI control lights: {e}")
+
+def ai_control_loop():
+    """Background thread for AI control"""
+    logger.info("AI Control loop started")
+    while True:
+        try:
+            if ai_mode_enabled:
+                ai_control_lights()
+            time.sleep(30)  # Check every 30 seconds
+        except Exception as e:
+            logger.error(f"Error in AI control loop: {e}")
+            time.sleep(30)  # Continue loop even if there's an error
+
+
+
+# Global state - Define these before functions that use them
+lights_state = {
+    'living_room': {'status': 'off', 'brightness': 0, 'color_temperature': 'warm', 'motion_detected': False},
+    'kitchen': {'status': 'off', 'brightness': 0, 'color_temperature': 'warm', 'motion_detected': False},
+    'bedroom': {'status': 'off', 'brightness': 0, 'color_temperature': 'warm', 'motion_detected': False},
+    'bathroom': {'status': 'off', 'brightness': 0, 'color_temperature': 'warm', 'motion_detected': False},
+    'office': {'status': 'off', 'brightness': 0, 'color_temperature': 'warm', 'motion_detected': False}
+}
+
+energy_data = {
+    'daily_consumption': 12.5,
+    'cost_saved': 3.75,
+    'usage_history': [
+        {'consumption': 0.8, 'cost': 0.24, 'timestamp': '2024-01-01T00:00:00'},
+        {'consumption': 0.6, 'cost': 0.18, 'timestamp': '2024-01-01T01:00:00'},
+        # Add more historical data...
+    ]
+}
+
+schedules = {
+    'living_room': {
+        'enabled': True,
+        'vacation_mode': False,
+        'sunrise_sunset': True,
+        'daily_schedule': {
+            'monday': [{'time': '07:00', 'action': 'on', 'brightness': 80}, {'time': '22:00', 'action': 'off'}],
+            'tuesday': [{'time': '07:00', 'action': 'on', 'brightness': 80}, {'time': '22:00', 'action': 'off'}],
+            'wednesday': [{'time': '07:00', 'action': 'on', 'brightness': 80}, {'time': '22:00', 'action': 'off'}],
+            'thursday': [{'time': '07:00', 'action': 'on', 'brightness': 80}, {'time': '22:00', 'action': 'off'}],
+            'friday': [{'time': '07:00', 'action': 'on', 'brightness': 80}, {'time': '22:00', 'action': 'off'}],
+            'saturday': [{'time': '08:00', 'action': 'on', 'brightness': 60}, {'time': '23:00', 'action': 'off'}],
+            'sunday': [{'time': '08:00', 'action': 'on', 'brightness': 60}, {'time': '22:00', 'action': 'off'}]
+        }
+    },
+    'kitchen': {
+        'enabled': False,
+        'vacation_mode': False,
+        'sunrise_sunset': False,
+        'daily_schedule': {
+            'monday': [{'time': '06:30', 'action': 'on', 'brightness': 100}, {'time': '23:00', 'action': 'off'}],
+            'tuesday': [{'time': '06:30', 'action': 'on', 'brightness': 100}, {'time': '23:00', 'action': 'off'}],
+            'wednesday': [{'time': '06:30', 'action': 'on', 'brightness': 100}, {'time': '23:00', 'action': 'off'}],
+            'thursday': [{'time': '06:30', 'action': 'on', 'brightness': 100}, {'time': '23:00', 'action': 'off'}],
+            'friday': [{'time': '06:30', 'action': 'on', 'brightness': 100}, {'time': '23:00', 'action': 'off'}],
+            'saturday': [{'time': '08:00', 'action': 'on', 'brightness': 80}, {'time': '00:00', 'action': 'off'}],
+            'sunday': [{'time': '08:00', 'action': 'on', 'brightness': 80}, {'time': '00:00', 'action': 'off'}]
+        }
+    },
+    'bedroom': {
+        'enabled': False,
+        'vacation_mode': False,
+        'sunrise_sunset': False,
+        'daily_schedule': {
+            'monday': [{'time': '06:00', 'action': 'on', 'brightness': 60}, {'time': '23:30', 'action': 'off'}],
+            'tuesday': [{'time': '06:00', 'action': 'on', 'brightness': 60}, {'time': '23:30', 'action': 'off'}],
+            'wednesday': [{'time': '06:00', 'action': 'on', 'brightness': 60}, {'time': '23:30', 'action': 'off'}],
+            'thursday': [{'time': '06:00', 'action': 'on', 'brightness': 60}, {'time': '23:30', 'action': 'off'}],
+            'friday': [{'time': '06:00', 'action': 'on', 'brightness': 60}, {'time': '23:30', 'action': 'off'}],
+            'saturday': [{'time': '08:00', 'action': 'on', 'brightness': 40}, {'time': '01:00', 'action': 'off'}],
+            'sunday': [{'time': '08:00', 'action': 'on', 'brightness': 40}, {'time': '01:00', 'action': 'off'}]
+        }
+    },
+    'bathroom': {
+        'enabled': False,
+        'vacation_mode': False,
+        'sunrise_sunset': False,
+        'daily_schedule': {
+            'monday': [{'time': '06:00', 'action': 'on', 'brightness': 100}, {'time': '23:00', 'action': 'off'}],
+            'tuesday': [{'time': '06:00', 'action': 'on', 'brightness': 100}, {'time': '23:00', 'action': 'off'}],
+            'wednesday': [{'time': '06:00', 'action': 'on', 'brightness': 100}, {'time': '23:00', 'action': 'off'}],
+            'thursday': [{'time': '06:00', 'action': 'on', 'brightness': 100}, {'time': '23:00', 'action': 'off'}],
+            'friday': [{'time': '06:00', 'action': 'on', 'brightness': 100}, {'time': '23:00', 'action': 'off'}],
+            'saturday': [{'time': '08:00', 'action': 'on', 'brightness': 80}, {'time': '00:00', 'action': 'off'}],
+            'sunday': [{'time': '08:00', 'action': 'on', 'brightness': 80}, {'time': '00:00', 'action': 'off'}]
+        }
+    },
+    'office': {
+        'enabled': False,
+        'vacation_mode': False,
+        'sunrise_sunset': False,
+        'daily_schedule': {
+            'monday': [{'time': '08:00', 'action': 'on', 'brightness': 90}, {'time': '18:00', 'action': 'off'}],
+            'tuesday': [{'time': '08:00', 'action': 'on', 'brightness': 90}, {'time': '18:00', 'action': 'off'}],
+            'wednesday': [{'time': '08:00', 'action': 'on', 'brightness': 90}, {'time': '18:00', 'action': 'off'}],
+            'thursday': [{'time': '08:00', 'action': 'on', 'brightness': 90}, {'time': '18:00', 'action': 'off'}],
+            'friday': [{'time': '08:00', 'action': 'on', 'brightness': 90}, {'time': '18:00', 'action': 'off'}],
+            'saturday': [{'time': '10:00', 'action': 'on', 'brightness': 70}, {'time': '16:00', 'action': 'off'}],
+            'sunday': [{'time': '10:00', 'action': 'on', 'brightness': 70}, {'time': '16:00', 'action': 'off'}]
+        }
+    }
+}
+
+@app.route('/api/status')
+@app.route('/')
+def get_status():
+    """
+    Get current system status including all lights and energy data.
+    Also serves as health check endpoint for Render.
+    
+    Returns:
+        JSON: System status with lights state, energy data, and timestamp
+        
+    Errors:
+        500: Internal server error
+    """
+    try:
+        # Return comprehensive system status
+        status = {
+            'lights': lights_state,
+            'energy': energy_data,
+            'timestamp': datetime.now().isoformat(),
+            'status': 'healthy',
+            'version': '1.1.0'
+        }
+        return jsonify(status)
+    except KeyError as e:
+        logger.error(f"Missing data in status response: {e}")
+        return jsonify({'error': 'System data incomplete', 'status': 'degraded'}), 500
+    except Exception as e:
+        logger.error(f"Error getting system status: {e}", exc_info=True)
+        return jsonify({'error': 'Internal server error', 'status': 'error'}), 500
+
+@app.route('/api/lights/<room>/control', methods=['POST'])
+def control_light(room):
+    """
+    Control individual light in a specific room.
+    
+    Args:
+        room: Room name (living_room, kitchen, bedroom, bathroom, office)
+        
+    Request Body:
+        - action (str): 'on', 'off', or 'dim'
+        - brightness (int, optional): Brightness level 0-100 (default: 100)
+        
+    Returns:
+        JSON: Updated light state for the room
+        
+    Errors:
+        404: Room not found
+        400: Invalid action or brightness value
+        500: Internal server error
+    """
+    try:
+        # Validate request data
+        if not request.is_json:
+            return jsonify({'error': 'Request must be JSON'}), 400
+            
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Request body is required'}), 400
+            
+        action = data.get('action')
+        brightness = data.get('brightness', 100)
+        
+        # Validate room exists
+        if room not in lights_state:
+            logger.warning(f"Attempted to control non-existent room: {room}")
+            return jsonify({'error': f'Room "{room}" not found'}), 404
+        
+        # Validate action
+        if action not in ['on', 'off', 'dim']:
+            return jsonify({'error': f'Invalid action "{action}". Must be "on", "off", or "dim"'}), 400
+        
+        # Validate brightness range
+        if not isinstance(brightness, int) or brightness < 0 or brightness > 100:
+            return jsonify({'error': 'Brightness must be an integer between 0 and 100'}), 400
+        
+        # Update light state based on action
+        if action == 'on':
+            lights_state[room]['status'] = 'on'
+            lights_state[room]['brightness'] = brightness
+        elif action == 'off':
+            lights_state[room]['status'] = 'off'
+            lights_state[room]['brightness'] = 0
+        elif action == 'dim':
+            lights_state[room]['status'] = 'on'
+            lights_state[room]['brightness'] = brightness
+        
+        # Emit real-time update via WebSocket
+        socketio.emit('light_update', {
+            'room': room,
+            'state': lights_state[room]
+        })
+        
+        logger.info(f"Light control: {room} -> {action} (brightness: {brightness}%)")
+        return jsonify(lights_state[room])
+        
+    except KeyError as e:
+        logger.error(f"Missing required field in light control request: {e}")
+        return jsonify({'error': f'Missing required field: {str(e)}'}), 400
+    except Exception as e:
+        logger.error(f"Error controlling light in {room}: {e}", exc_info=True)
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/lights/<room>/toggle', methods=['POST'])
+def toggle_light(room):
+    """Toggle light on/off"""
+    try:
+        if room not in lights_state:
+            return jsonify({'error': 'Room not found'}), 404
+        
+        current_status = lights_state[room]['status']
+        new_status = 'off' if current_status == 'on' else 'on'
+        
+        lights_state[room]['status'] = new_status
+        if new_status == 'off':
+            lights_state[room]['brightness'] = 0
+        
+        # Log the activity
+        log_activity(
+            action='light_toggle',
+            room=room,
+            details={
+                'previous_status': current_status,
+                'new_status': new_status,
+                'brightness': lights_state[room]['brightness'],
+                'method': 'manual_control'
+            }
+        )
+        
+        # Emit socket event
+        socketio.emit('light_update', {
+            'room': room,
+            'state': lights_state[room]
+        })
+        
+        return jsonify({'status': new_status})
+    except Exception as e:
+        logger.error(f"Error toggling light: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/lights/<room>/brightness', methods=['POST'])
+def set_brightness(room):
+    """
+    Set brightness level for a specific room.
+    
+    Args:
+        room: Room name (living_room, kitchen, bedroom, bathroom, office)
+        
+    Request Body:
+        - brightness (int): Brightness level 0-100
+        
+    Returns:
+        JSON: Updated brightness value
+        
+    Errors:
+        404: Room not found
+        400: Invalid brightness value
+        500: Internal server error
+    """
+    try:
+        # Validate request format
+        if not request.is_json:
+            return jsonify({'error': 'Request must be JSON'}), 400
+            
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Request body is required'}), 400
+            
+        brightness = data.get('brightness', 0)
+        
+        # Validate room exists
+        if room not in lights_state:
+            logger.warning(f"Attempted to set brightness for non-existent room: {room}")
+            return jsonify({'error': f'Room "{room}" not found'}), 404
+        
+        # Validate brightness value
+        if not isinstance(brightness, int):
+            return jsonify({'error': 'Brightness must be an integer'}), 400
+        if brightness < 0 or brightness > 100:
+            return jsonify({'error': 'Brightness must be between 0 and 100'}), 400
+        
+        # Store previous state for logging
+        previous_brightness = lights_state[room]['brightness']
+        
+        # Update brightness and status
+        lights_state[room]['brightness'] = brightness
+        if brightness > 0:
+            lights_state[room]['status'] = 'on'
+        else:
+            lights_state[room]['status'] = 'off'
+        
+        # Log the activity for analytics
+        log_activity(
+            action='brightness_adjust',
+            room=room,
+            details={
+                'previous_brightness': previous_brightness,
+                'new_brightness': brightness,
+                'status': lights_state[room]['status'],
+                'method': 'manual_control'
+            }
+        )
+        
+        # Emit real-time update via WebSocket
+        socketio.emit('light_update', {
+            'room': room,
+            'state': lights_state[room]
+        })
+        
+        logger.info(f"Brightness updated: {room} -> {brightness}%")
+        return jsonify({'brightness': brightness})
+        
+    except KeyError as e:
+        logger.error(f"Missing required field in brightness request: {e}")
+        return jsonify({'error': f'Missing required field: {str(e)}'}), 400
+    except Exception as e:
+        logger.error(f"Error setting brightness for {room}: {e}", exc_info=True)
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/lights/<room>/color', methods=['POST'])
+def set_color_temperature(room):
+    """Set color temperature for a room"""
+    try:
+        data = request.get_json()
+        temperature = data.get('temperature', 'warm')
+        
+        if room not in lights_state:
+            return jsonify({'error': 'Room not found'}), 404
+        
+        previous_temperature = lights_state[room].get('color_temperature', 'warm')
+        lights_state[room]['color_temperature'] = temperature
+        
+        # Log the activity
+        log_activity(
+            action='color_temperature_change',
+            room=room,
+            details={
+                'previous_temperature': previous_temperature,
+                'new_temperature': temperature,
+                'method': 'manual_control'
+            }
+        )
+        
+        # Emit socket event
+        socketio.emit('light_update', {
+            'room': room,
+            'state': lights_state[room]
+        })
+        
+        return jsonify({'temperature': temperature})
+    except Exception as e:
+        logger.error(f"Error setting color temperature: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/lights/bulk', methods=['POST'])
+def bulk_control_lights():
+    """Control all lights at once"""
+    try:
+        data = request.get_json()
+        action = data.get('action')
+        brightness = data.get('brightness', 100)
+        
+        results = {}
+        affected_rooms = []
+        
+        for room in lights_state:
+            previous_state = lights_state[room].copy()
+            
+            if action == 'on':
+                lights_state[room]['status'] = 'on'
+                lights_state[room]['brightness'] = brightness
+            elif action == 'off':
+                lights_state[room]['status'] = 'off'
+                lights_state[room]['brightness'] = 0
+            elif action == 'dim':
+                lights_state[room]['status'] = 'on'
+                lights_state[room]['brightness'] = brightness
+            
+            results[room] = lights_state[room]
+            affected_rooms.append(room)
+            
+            # Emit socket event for each room
+            socketio.emit('light_update', {
+                'room': room,
+                'state': lights_state[room]
+            })
+        
+        # Log the bulk activity
+        log_activity(
+            action='bulk_light_control',
+            room=None,
+            details={
+                'action': action,
+                'brightness': brightness,
+                'affected_rooms': affected_rooms,
+                'total_rooms': len(affected_rooms),
+                'method': 'bulk_control'
+            }
+        )
+        
+        return jsonify({'results': results})
+    except Exception as e:
+        logger.error(f"Error bulk controlling lights: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/lights')
+def get_lights():
+    """Get all lights status"""
+    try:
+        return jsonify(lights_state)
+    except Exception as e:
+        logger.error(f"Error getting lights: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/ai/mode', methods=['POST'])
+def toggle_ai_mode():
+    """Toggle AI Mode on/off"""
+    try:
+        global ai_mode_enabled
+        
+        # Validate request data
+        if not request.is_json:
+            return jsonify({'error': 'Invalid request format'}), 400
+            
+        data = request.get_json()
+        if data is None:
+            return jsonify({'error': 'No data provided'}), 400
+            
+        enabled = data.get('enabled')
+        if enabled is None:
+            enabled = not ai_mode_enabled
+        
+        previous_state = ai_mode_enabled
+        ai_mode_enabled = enabled
+        
+        logger.info(f"AI Mode toggle: {previous_state} -> {enabled}")
+        
+        # Log the activity
+        log_activity(
+            action='ai_mode_toggle',
+            room=None,
+            details={
+                'previous_state': previous_state,
+                'new_state': enabled,
+                'method': 'manual_control'
+            }
+        )
+        
+        # Emit socket event with error handling
+        try:
+            socketio.emit('ai_mode_update', {
+                'enabled': ai_mode_enabled,
+                'timestamp': datetime.now().isoformat()
+            })
+            logger.info("AI mode update socket event emitted successfully")
+        except Exception as socket_error:
+            logger.warning(f"Socket emit failed for AI mode update: {socket_error}")
+        
+        if ai_mode_enabled:
+            # Trigger initial AI control with error handling
+            try:
+                logger.info("Triggering initial AI control...")
+                ai_control_lights()
+                logger.info("AI Mode enabled successfully")
+            except Exception as ai_error:
+                logger.error(f"Error in initial AI control: {ai_error}")
+                # Don't fail the request if AI control fails
+        else:
+            logger.info("AI Mode disabled successfully")
+        
+        return jsonify({
+            'ai_mode_enabled': ai_mode_enabled,
+            'message': f"AI Mode {'enabled' if ai_mode_enabled else 'disabled'}",
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Error toggling AI mode: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/ai/status')
+def get_ai_status():
+    """Get AI Mode status and predictions"""
+    try:
+        current_time = datetime.now()
+        time_of_day = get_time_of_day()
+        
+        # Get weather data
+        weather_data = get_weather_data()
+        weather_adjustment = get_weather_lighting_adjustment()
+        natural_light_factor = get_natural_light_factor()
+        
+        # Get current predictions for all rooms
+        predictions = {}
+        for room in lights_state:
+            try:
+                occupancy_prob = advanced_occupancy_predictor.predict(current_time.isoformat(), room, weather_data, None)
+                predictions[room] = {
+                    'occupancy_probability': round(occupancy_prob * 100, 1),
+                    'predicted_occupied': occupancy_prob > 0.5,
+                    'optimized_brightness': optimize_brightness(room, lights_state[room]['brightness']),
+                    'weather_adjustment': round(weather_adjustment, 2),
+                    'natural_light_factor': round(natural_light_factor, 2)
+                }
+            except Exception as room_error:
+                logger.error(f"Error processing room {room} in AI status: {room_error}")
+                predictions[room] = {
+                    'occupancy_probability': 0,
+                    'predicted_occupied': False,
+                    'optimized_brightness': 80,
+                    'weather_adjustment': 1.0,
+                    'natural_light_factor': 0.5
+                }
+        
+        logger.info(f"AI Status requested - Mode: {ai_mode_enabled}, Time: {time_of_day}")
+        
+        return jsonify({
+            'ai_mode_enabled': ai_mode_enabled,
+            'current_time': current_time.isoformat(),
+            'time_of_day': time_of_day,
+            'predictions': predictions,
+            'user_patterns': user_behavior_learner.get_user_patterns(), # Assuming user_behavior_learner has this method
+            'weather': {
+                'data': weather_data,
+                'lighting_adjustment': round(weather_adjustment, 2),
+                'natural_light_factor': round(natural_light_factor, 2)
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting AI status: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/ai/test')
+def test_ai_mode():
+    """Test AI mode functionality"""
+    try:
+        current_time = datetime.now()
+        time_of_day = get_time_of_day()
+        
+        # Test predictions for each room
+        test_results = {}
+        for room in lights_state:
+            try:
+                will_be_occupied = predict_occupancy(room)
+                current_brightness = lights_state[room]['brightness']
+                optimized_brightness = optimize_brightness(room, current_brightness)
+                
+                test_results[room] = {
+                    'prediction': 'occupied' if will_be_occupied else 'not_occupied',
+                    'current_brightness': current_brightness,
+                    'optimized_brightness': optimized_brightness,
+                    'time_of_day': time_of_day,
+                    'base_probability': advanced_occupancy_predictor.predict(current_time.isoformat(), room, get_weather_data(), None) # Use advanced predictor
+                }
+            except Exception as room_error:
+                logger.error(f"Error testing AI for room {room}: {room_error}")
+                test_results[room] = {
+                    'error': str(room_error),
+                    'prediction': 'error',
+                    'current_brightness': 0,
+                    'optimized_brightness': 80
+                }
+        
+        return jsonify({
+            'ai_mode_enabled': ai_mode_enabled,
+            'test_time': current_time.isoformat(),
+            'time_of_day': time_of_day,
+            'test_results': test_results,
+            'message': 'AI test completed successfully'
+        })
+    except Exception as e:
+        logger.error(f"Error in AI test: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/weather')
+def get_weather():
+    """Get current weather data"""
+    try:
+        # Log API key status for debugging (don't log the actual key)
+        if WEATHER_API_KEY == 'demo_key':
+            logger.warning("⚠️ Using demo weather data - WEATHER_API_KEY not set")
+        else:
+            logger.info(f"✅ Weather API key is set (length: {len(WEATHER_API_KEY)})")
+        
+        weather_data = get_weather_data()
+        if not weather_data:
+            logger.error("❌ get_weather_data returned None")
+            return jsonify({
+                'error': 'Weather data unavailable',
+                'message': 'API call failed and no cached data available. Check WEATHER_API_KEY in Render environment variables.',
+                'api_key_set': WEATHER_API_KEY != 'demo_key'
+            }), 500
+        
+        weather_adjustment = get_weather_lighting_adjustment()
+        natural_light_factor = get_natural_light_factor()
+        
+        return jsonify({
+            'weather': weather_data,
+            'lighting_adjustment': round(weather_adjustment, 2),
+            'natural_light_factor': round(natural_light_factor, 2),
+            'timestamp': datetime.now().isoformat(),
+            'api_key_set': WEATHER_API_KEY != 'demo_key'
+        })
+    except Exception as e:
+        logger.error(f"❌ Error getting weather: {e}", exc_info=True)
+        return jsonify({
+            'error': 'Internal server error',
+            'message': str(e),
+            'api_key_set': WEATHER_API_KEY != 'demo_key'
+        }), 500
+
+@app.route('/api/weather/optimize', methods=['POST'])
+def apply_weather_optimization():
+    """Apply weather-based optimization to all lights"""
+    try:
+        data = request.get_json()
+        apply_optimization = data.get('apply', False)
+        
+        if not apply_optimization:
+            return jsonify({'message': 'Weather optimization not applied'})
+        
+        weather_adjustment = get_weather_lighting_adjustment()
+        natural_light_factor = get_natural_light_factor()
+        
+        optimized_rooms = {}
+        
+        for room in lights_state:
+            current_brightness = lights_state[room]['brightness']
+            
+            # Calculate weather-optimized brightness
+            if lights_state[room]['status'] == 'on':
+                # Apply weather adjustment
+                weather_optimized = int(current_brightness * weather_adjustment)
+                
+                # Consider natural light factor
+                if natural_light_factor > 0.7:  # High natural light
+                    weather_optimized = max(20, int(weather_optimized * 0.8))
+                elif natural_light_factor < 0.3:  # Low natural light
+                    weather_optimized = min(100, int(weather_optimized * 1.2))
+                
+                # Room-specific adjustments
+                if room == 'bedroom':
+                    weather_optimized = min(weather_optimized, 80)  # Cap bedroom brightness
+                elif room == 'bathroom':
+                    weather_optimized = max(weather_optimized, 60)  # Minimum bathroom brightness
+                elif room == 'kitchen':
+                    weather_optimized = max(weather_optimized, 70)  # Minimum kitchen brightness
+                
+                # Update light state
+                lights_state[room]['brightness'] = max(0, min(100, weather_optimized))
+                
+                # Emit socket event
+                socketio.emit('light_update', {
+                    'room': room,
+                    'state': lights_state[room],
+                    'source': 'weather_optimization',
+                    'weather_adjustment': round(weather_adjustment, 2),
+                    'natural_light_factor': round(natural_light_factor, 2)
+                })
+                
+                optimized_rooms[room] = {
+                    'previous_brightness': current_brightness,
+                    'new_brightness': lights_state[room]['brightness'],
+                    'adjustment': weather_adjustment,
+                    'natural_light_factor': natural_light_factor
+                }
+        
+        # Log the weather optimization activity
+        log_activity(
+            'weather_optimization_applied',
+            room=None,
+            details={
+                'weather_adjustment': round(weather_adjustment, 2),
+                'natural_light_factor': round(natural_light_factor, 2),
+                'optimized_rooms': list(optimized_rooms.keys()),
+                'total_rooms': len(optimized_rooms)
+            }
+        )
+        
+        return jsonify({
+            'message': 'Weather optimization applied successfully',
+            'weather_adjustment': round(weather_adjustment, 2),
+            'natural_light_factor': round(natural_light_factor, 2),
+            'optimized_rooms': optimized_rooms,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error applying weather optimization: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/weather/forecast')
+def get_weather_forecast():
+    """Get accurate weather forecast for the next 24 hours from OpenWeatherMap"""
+    try:
+        if WEATHER_API_KEY == 'demo_key':
+            # Return demo forecast
+            weather_data = get_weather_data()
+            forecast = []
+            for i in range(1, 9):  # Next 8 periods (3-hour intervals)
+                forecast_time = datetime.now() + timedelta(hours=i*3)
+                forecast.append({
+                    'dt': int(forecast_time.timestamp()),
+                    'main': {
+                        'temp': 20 + random.uniform(-3, 3),
+                        'humidity': 65 + random.uniform(-10, 10),
+                        'pressure': 1013
+                    },
+                    'weather': [{
+                        'main': 'Clouds',
+                        'description': 'scattered clouds',
+                        'icon': '03d'
+                    }],
+                    'clouds': {'all': 40},
+                    'wind': {'speed': 5, 'deg': 180},
+                    'visibility': 10000
+                })
+            return jsonify({
+                'list': forecast,
+                'city': {'name': WEATHER_CITY},
+                'timestamp': datetime.now().isoformat()
+            })
+        
+        # Real API call for forecast
+        params = {
+            'appid': WEATHER_API_KEY,
+            'units': 'imperial',
+            'cnt': 8,  # 8 periods = 24 hours (3-hour intervals)
+            'lang': 'en'
+        }
+        
+        # Use coordinates if available for more accuracy
+        if WEATHER_LAT and WEATHER_LON:
+            params['lat'] = WEATHER_LAT
+            params['lon'] = WEATHER_LON
+        else:
+            params['q'] = WEATHER_CITY
+        
+        # Use session with retry logic for forecast API
+        # Shorter timeout - DNS errors won't resolve with retries
+        try:
+            response = weather_session.get(WEATHER_FORECAST_URL, params=params, timeout=(3, 8))
+            if response.status_code == 200:
+                forecast_data = response.json()
+                logger.info(f"✅ Successfully fetched weather forecast")
+                return jsonify({
+                    'list': forecast_data.get('list', []),
+                    'city': forecast_data.get('city', {'name': WEATHER_CITY}),
+                    'timestamp': datetime.now().isoformat()
+                })
+            else:
+                logger.warning(f"⚠️ Weather forecast API error: {response.status_code}")
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            logger.warning(f"⚠️ Weather forecast API connection error: {e}")
+            # Return demo forecast on connection error
+            # Fall back to current weather as single forecast point
+            weather_data = get_weather_data()
+            if weather_data:
+                return jsonify({
+                    'list': [{
+                        'dt': int(datetime.now().timestamp()),
+                        'main': weather_data['main'],
+                        'weather': weather_data['weather'],
+                        'clouds': weather_data.get('clouds', {}),
+                        'wind': weather_data.get('wind', {}),
+                        'visibility': weather_data.get('visibility', 10000)
+                    }],
+                    'city': {'name': weather_data.get('name', WEATHER_CITY)},
+                    'timestamp': datetime.now().isoformat()
+                })
+            return jsonify({'error': 'Weather forecast unavailable'}), 500
+        
+    except Exception as e:
+        logger.error(f"Error getting weather forecast: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/weather/impact')
+def get_weather_impact():
+    """Get weather impact on lighting for all rooms"""
+    try:
+        weather_data = get_weather_data()
+        weather_adjustment = get_weather_lighting_adjustment()
+        natural_light_factor = get_natural_light_factor()
+        
+        # Calculate impact for each room
+        room_impacts = {}
+        for room in lights_state:
+            current_brightness = lights_state[room]['brightness']
+            optimized_brightness = optimize_brightness(room, current_brightness)
+            
+            room_impacts[room] = {
+                'current_brightness': current_brightness,
+                'weather_optimized_brightness': optimized_brightness,
+                'adjustment_factor': round(weather_adjustment, 2),
+                'natural_light_factor': round(natural_light_factor, 2),
+                'brightness_change': optimized_brightness - current_brightness
+            }
+        
+        return jsonify({
+            'weather': weather_data,
+            'overall_adjustment': round(weather_adjustment, 2),
+            'natural_light_factor': round(natural_light_factor, 2),
+            'room_impacts': room_impacts,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Error getting weather impact: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/lights/all', methods=['POST'])
+def control_all_lights():
+    """Control all lights"""
+    try:
+        data = request.get_json()
+        action = data.get('action')
+        brightness = data.get('brightness', 100)
+        
+        for room in lights_state:
+            if action == 'on':
+                lights_state[room]['status'] = 'on'
+                lights_state[room]['brightness'] = brightness
+            elif action == 'off':
+                lights_state[room]['status'] = 'off'
+                lights_state[room]['brightness'] = 0
+            elif action == 'dim':
+                lights_state[room]['brightness'] = max(0, min(100, brightness))
+                if lights_state[room]['brightness'] > 0:
+                    lights_state[room]['status'] = 'on'
+                else:
+                    lights_state[room]['status'] = 'off'
+            
+            # Emit socket event for each room
+            socketio.emit('light_update', {
+                'room': room,
+                'state': lights_state[room]
+            })
+        
+        return jsonify({'message': f'All lights {action}'})
+    except Exception as e:
+        logger.error(f"Error controlling all lights: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/schedules')
+def get_schedules():
+    """Get all schedules"""
+    try:
+        return jsonify(schedules)
+    except Exception as e:
+        logger.error(f"Error getting schedules: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/schedules/<room>/enable', methods=['POST'])
+def toggle_schedule(room):
+    """Toggle schedule for a room"""
+    try:
+        data = request.get_json()
+        enabled = data.get('enabled', False)
+        
+        if room not in schedules:
+            schedules[room] = {
+                'enabled': enabled,
+                'vacation_mode': False,
+                'sunrise_sunset': False,
+                'daily_schedule': {}
+            }
+        else:
+            schedules[room]['enabled'] = enabled
+        
+        return jsonify({'schedule': schedules[room]})
+    except Exception as e:
+        logger.error(f"Error toggling schedule: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/schedules/<room>/vacation', methods=['POST'])
+def toggle_vacation_mode(room):
+    """Toggle vacation mode for a room"""
+    try:
+        data = request.get_json()
+        vacation_mode = data.get('vacation_mode', False)
+        
+        if room not in schedules:
+            schedules[room] = {
+                'enabled': False,
+                'vacation_mode': vacation_mode,
+                'sunrise_sunset': False,
+                'daily_schedule': {}
+            }
+        else:
+            schedules[room]['vacation_mode'] = vacation_mode
+        
+        return jsonify({'schedule': schedules[room]})
+    except Exception as e:
+        logger.error(f"Error toggling vacation mode: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/schedules/<room>/sunrise-sunset', methods=['POST'])
+def toggle_sunrise_sunset(room):
+    """Toggle sunrise/sunset mode for a room"""
+    try:
+        data = request.get_json()
+        sunrise_sunset = data.get('sunrise_sunset', False)
+        
+        if room not in schedules:
+            schedules[room] = {
+                'enabled': False,
+                'vacation_mode': False,
+                'sunrise_sunset': sunrise_sunset,
+                'daily_schedule': {}
+            }
+        else:
+            schedules[room]['sunrise_sunset'] = sunrise_sunset
+        
+        return jsonify({'schedule': schedules[room]})
+    except Exception as e:
+        logger.error(f"Error toggling sunrise/sunset mode: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/schedules/<room>/times', methods=['POST'])
+def update_schedule_times(room):
+    """Update schedule times for a room"""
+    try:
+        data = request.get_json()
+        day = data.get('day')
+        times = data.get('times', [])
+        
+        if room not in schedules:
+            schedules[room] = {
+                'enabled': False,
+                'vacation_mode': False,
+                'sunrise_sunset': False,
+                'daily_schedule': {}
+            }
+        
+        schedules[room]['daily_schedule'][day] = times
+        
+        return jsonify({'schedule': schedules[room]})
+    except Exception as e:
+        logger.error(f"Error updating schedule times: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/schedules/status')
+def get_schedule_status():
+    """Get current schedule execution status"""
+    try:
+        current_time = datetime.now()
+        current_day = current_time.strftime('%A').lower()
+        current_time_str = current_time.strftime('%H:%M')
+        
+        status = {
+            'current_time': current_time_str,
+            'current_day': current_day,
+            'active_schedules': [],
+            'next_events': []
+        }
+        
+        # Check for active schedules
+        for room, schedule in schedules.items():
+            if schedule.get('enabled', False):
+                status['active_schedules'].append(room)
+                
+                # Find next events for this room
+                daily_schedule = schedule.get('daily_schedule', {}).get(current_day, [])
+                for event in daily_schedule:
+                    event_time = event.get('time', '')
+                    if event_time > current_time_str:
+                        status['next_events'].append({
+                            'room': room,
+                            'time': event_time,
+                            'action': event['action'],
+                            'brightness': event.get('brightness', 100)
+                        })
+        
+        # Sort next events by time
+        status['next_events'].sort(key=lambda x: x['time'])
+        
+        return jsonify(status)
+    except Exception as e:
+        logger.error(f"Error getting schedule status: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/activity/logs')
+def get_activity_logs():
+    """Get activity logs"""
+    try:
+        # Get query parameters
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 20))
+        search = request.args.get('search', '')
+        action_filter = request.args.get('action', '')
+        
+        # Get logs from memory
+        logs = getattr(app, 'activity_logs', [])
+        
+        # Apply filters
+        filtered_logs = logs
+        if search:
+            filtered_logs = [log for log in logs if 
+                           search.lower() in log.get('action', '').lower() or
+                           search.lower() in log.get('room', '').lower() or
+                           search.lower() in str(log.get('details', '')).lower()]
+        
+        if action_filter:
+            filtered_logs = [log for log in filtered_logs if log.get('action') == action_filter]
+        
+        # Calculate pagination
+        total_logs = len(filtered_logs)
+        total_pages = (total_logs + per_page - 1) // per_page
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+        
+        # Get page of logs
+        page_logs = filtered_logs[start_idx:end_idx]
+        
+        return jsonify({
+            'logs': page_logs,
+            'pages': total_pages,
+            'total': total_logs,
+            'current_page': page
+        })
+    except Exception as e:
+        logger.error(f"Error getting activity logs: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/statistics')
+def get_statistics():
+    """Get energy statistics"""
+    try:
+        stats = {
+            'current_month': {
+                'energy_used': 45.2,
+                'energy_saved': 12.8,
+                'cost_saved': 3.84,
+                'carbon_reduced': 8.5,
+                'lights_optimized': 15
+            },
+            'yearly': {
+                'total_saved': 156.80,
+                'energy_reduction': 28.5,
+                'cost_reduction': 47.04,
+                'carbon_footprint': 102.3
+            },
+            'comparison': {
+                'before': 158.7,
+                'after': 111.9,
+                'percentage': 29.5
+            }
+        }
+        
+        return jsonify(stats)
+    except Exception as e:
+        logger.error(f"Error getting statistics: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+# Socket.IO events
+@socketio.on('connect')
+def handle_connect():
+    """Handle client connection with origin validation"""
+    origin = request.headers.get('Origin') or request.headers.get('Referer', '')
+    if not is_origin_allowed(origin):
+        logger.warning(f'Connection rejected from unauthorized origin: {origin}')
+        return False  # Reject connection
+    logger.info(f'Client connected from: {origin}')
+    emit('connected', {'data': 'Connected'})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle client disconnection"""
+    try:
+        logger.info('Client disconnected')
+    except Exception as e:
+        # Ignore socket cleanup errors (common with Eventlet)
+        # "Bad file descriptor" errors are harmless cleanup issues
+        if 'Bad file descriptor' not in str(e):
+            logger.debug(f'Socket disconnect cleanup: {e}')
+
+@socketio.on('motion_detected')
+def handle_motion(data):
+    """Handle motion detection"""
+    room = data.get('room')
+    if room in lights_state:
+        lights_state[room]['motion_detected'] = True
+        socketio.emit('motion_update', {'room': room})
+        logger.info(f'Motion detected in {room}')
+
+# CORS headers handler - add headers to all responses
+@app.after_request
+def after_request(response):
+    """Add CORS headers to all responses - CRITICAL for Vercel connections"""
+    origin = request.headers.get('Origin')
+    
+    # Always allow Vercel domains (production and preview)
+    if origin and origin.endswith('.vercel.app'):
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        logger.info(f'✅ CORS headers added for Vercel: {origin}')
+    elif origin and is_origin_allowed(origin):
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    elif origin:
+        # Log rejected origins for debugging
+        logger.warning(f'❌ CORS rejected origin: {origin}')
+    
+    return response
+
+# CORS preflight handler for OPTIONS requests
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        origin = request.headers.get('Origin')
+        if origin and (is_origin_allowed(origin) or origin.endswith('.vercel.app')):
+            response = jsonify({'status': 'ok'})
+            response.headers.add('Access-Control-Allow-Origin', origin)
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+            response.headers.add('Access-Control-Allow-Credentials', 'true')
+            return response
+        return jsonify({'error': 'Origin not allowed'}), 403
+
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'error': 'Not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    logger.error(f"Internal server error: {error}")
+    return jsonify({'error': 'Internal server error'}), 500
+
+# Authentication endpoints
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    """User login endpoint"""
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+        
+        # For demo purposes, accept any credentials
+        # In production, validate against database
+        if username and password:
+            # Create user object
+            user = {
+                'id': 1,
+                'username': username,
+                'name': username.title(),
+                'email': f"{username}@smarthome.com",
+                'role': 'home_owner',
+                'preferences': {
+                    'light_preferences': {
+                        'default_brightness': 80,
+                        'favorite_color_temperature': 'warm'
+                    },
+                    'notifications': {
+                        'email': True,
+                        'push': True
+                    }
+                }
+            }
+            
+            # Generate simple token (in production, use JWT)
+            token = f"token_{username}_{int(time.time())}"
+            
+            return jsonify({
+                'user': user,
+                'token': token,
+                'message': 'Login successful'
+            }), 200
+        else:
+            return jsonify({'message': 'Invalid credentials'}), 401
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        return jsonify({'message': 'Login failed'}), 500
+
+@app.route('/api/auth/verify', methods=['GET'])
+def verify_token():
+    """Verify authentication token"""
+    try:
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({'message': 'No token provided'}), 401    
+        token = auth_header.split(' ')[1]
+        
+        # For demo purposes, accept any token
+        # In production, validate JWT token
+        if token.startswith('token_'):
+            # Extract username from token
+            username = token.split('_')[1]
+            user = {
+                'id': 1,
+                'username': username,
+                'name': username.title(),
+                'email': f"{username}@smarthome.com",
+                'role': 'home_owner',
+                'preferences': {
+                    'light_preferences': {
+                        'default_brightness': 80,
+                        'favorite_color_temperature': 'warm'
+                    },
+                    'notifications': {
+                        'email': True,
+                        'push': True
+                    }
+                }
+            }
+            return jsonify(user), 200
+        else:
+            return jsonify({'message': 'Invalid token'}), 401
+    except Exception as e:
+        logger.error(f"Token verification error: {e}")
+        return jsonify({'message': 'Token verification failed'}), 500
+
+@app.route('/api/auth/logout', methods=['POST'])
+def logout():
+    """User logout endpoint"""
+    try:
+        # In production, invalidate token
+        return jsonify({'message': 'Logout successful'}), 200
+    except Exception as e:
+        logger.error(f"Logout error: {e}")
+        return jsonify({'message': 'Logout failed'}), 500
+
+@app.route('/api/settings', methods=['GET', 'POST'])
+def handle_settings():
+    """Get or update system settings"""
+    try:
+        if request.method == 'GET':
+            # Return default settings (in production, load from database)
+            settings = {
+                'notifications': {
+                    'email': True,
+                    'push': True,
+                    'sms': False,
+                    'energyAlerts': True,
+                    'securityAlerts': True
+                },
+                'system': {
+                    'autoUpdate': True,
+                    'dataCollection': False,
+                    'analytics': False,
+                    'crashReports': True
+                },
+                'display': {
+                    'language': 'en',
+                    'timezone': 'America/New_York',
+                    'dateFormat': 'MM/DD/YYYY',
+                    'temperatureUnit': 'fahrenheit'
+                },
+                'network': {
+                    'wifiEnabled': True,
+                    'bluetoothEnabled': False,
+                    'cloudSync': True
+                }
+            }
+            return jsonify(settings), 200
+        
+        elif request.method == 'POST':
+            # Update settings (in production, save to database)
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'No data provided'}), 400
+            
+            # Validate and update settings
+            # In production, save to database here
+            logger.info(f"Settings updated: {data}")
+            return jsonify({'message': 'Settings updated successfully', 'settings': data}), 200
+            
+    except Exception as e:
+        logger.error(f"Settings error: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/api/auth/profile', methods=['PUT'])
+def update_profile():
+    """Update user profile"""
+    try:
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({'message': 'No token provided'}), 401     
+        data = request.get_json()
+        
+        # Update user profile (in production, save to database)
+        user = {
+            'id': 1,
+            'username': data.get('username', 'user'),
+            'name': data.get('name', 'User'),
+            'email': data.get('email', 'user@smarthome.com'),
+            'role': data.get('role', 'home_owner'),
+            'preferences': {
+                'light_preferences': {
+                    'default_brightness': 80,
+                    'favorite_color_temperature': 'warm'
+                },
+                'notifications': {
+                    'email': True,
+                    'push': True
+                }
+            }
+        }
+        
+        return jsonify(user), 200
+        
+    except Exception as e:
+        logger.error(f"Profile update error: {e}")
+        return jsonify({'message': 'Profile update failed'}), 500
+
+if __name__ == '__main__':
+    try:
+        logger.info("🚀 Starting AI Smart Light Control System...")
+        
+        # Initialize database first (critical)
+        try:
+            init_db()
+            logger.info("✅ Database initialized successfully")
+        except Exception as db_error:
+            logger.error(f"❌ Database initialization failed: {db_error}")
+            # Continue anyway - app can work without database for basic functionality
+        
+        # Initialize sample activity logs
+        try:
+            init_sample_logs()
+            logger.info("✅ Activity logs initialized")
+        except Exception as log_error:
+            logger.warning(f"⚠️ Activity logs initialization failed: {log_error}")
+        
+        # Start background threads (non-critical - app can run without them)
+        try:
+            # Initialize AI models in background (non-blocking)
+            ai_init_thread = threading.Thread(target=init_models, daemon=True)
+            ai_init_thread.start()
+            logger.info("✅ AI models initialization started")
+        except Exception as ai_error:
+            logger.warning(f"⚠️ AI models initialization failed: {ai_error}")
+        
+        try:
+            schedule_thread = threading.Thread(target=schedule_execution_loop, daemon=True)
+            schedule_thread.start()
+            logger.info("✅ Schedule execution loop started")
+        except Exception as schedule_error:
+            logger.warning(f"⚠️ Schedule loop failed: {schedule_error}")
+        
+        try:
+            ai_thread = threading.Thread(target=ai_control_loop, daemon=True)
+            ai_thread.start()
+            logger.info("✅ AI control loop started")
+        except Exception as ai_control_error:
+            logger.warning(f"⚠️ AI control loop failed: {ai_control_error}")
+        
+        try:
+            weather_thread = threading.Thread(target=weather_update_loop, daemon=True)
+            weather_thread.start()
+            logger.info("✅ Weather update loop started")
+        except Exception as weather_error:
+            logger.warning(f"⚠️ Weather loop failed: {weather_error}")
+        
+        logger.info("📊 Energy monitoring active")
+        logger.info("🤖 AI prediction models loaded")
+        logger.info("💡 Smart automation enabled")
+        
+        # Use environment variable for port or default to 5000
+        port = int(os.getenv('PORT', 5000))
+        logger.info(f"🌐 Starting server on port {port}")
+        
+        if os.getenv('FLASK_ENV') == 'production':
+            # Production: Use Gunicorn or similar WSGI server
+            socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
+        else:
+            # Development
+            socketio.run(app, host='0.0.0.0', port=port, debug=True, allow_unsafe_werkzeug=True)
+    except Exception as startup_error:
+        logger.error(f"❌ Fatal error during startup: {startup_error}", exc_info=True)
+        raise 
