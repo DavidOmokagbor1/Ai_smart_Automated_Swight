@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: ai-smart-automated-swight
+    env: python
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: "pip install --upgrade pip setuptools wheel && pip install -r requirements.txt"
+    startCommand: "gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT app:app"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: FLASK_ENV
+        value: production
+      - key: SECRET_KEY
+        sync: false  # Set this in Render dashboard
+      - key: ALLOWED_ORIGINS
+        value: "https://ai-smart-automated-swight-hl81570f7-davidomokagbor1s-projects.vercel.app,https://ai-smart-automated-swight.vercel.app,https://energy-savings-system.vercel.app,https://energy-savings-system-git-main-davidomokagbor1s-projects.vercel.app,http://localhost:3000"
+      - key: WEATHER_API_KEY
+        sync: false  # Optional - set in Render dashboard
+      - key: WEATHER_CITY
+        value: "New York"
+    healthCheckPath: /api/status
