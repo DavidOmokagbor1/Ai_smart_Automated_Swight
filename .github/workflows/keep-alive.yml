@@ -1,0 +1,23 @@
+name: Keep Backend Alive
+
+on:
+  schedule:
+    # Run every 5 minutes to prevent Render spin-down (free tier spins down after 15 min)
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  ping-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Backend
+        run: |
+          echo "🔄 Pinging backend to keep it alive..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://ai-smart-automated-swight.onrender.com/api/status)
+          if [ "$response" = "200" ]; then
+            echo "✅ Backend is alive (HTTP $response)"
+          else
+            echo "⚠️ Backend returned HTTP $response"
+            exit 1
+          fi
+        timeout-minutes: 1
