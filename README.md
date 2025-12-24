@@ -184,6 +184,8 @@ npm start
 - 📘 [Mobile App Setup Guide](MOBILE_APP_SETUP.md)
 - 📘 [Keep-Alive Setup Guide](KEEP_ALIVE_SETUP.md) - Keep your Render backend running 24/7
 - 📘 [System Overview](docs/SYSTEM_OVERVIEW.md)
+- 📊 [Datadog Monitoring Setup](docs/DATADOG_SETUP.md) - Complete observability with Datadog
+- 🚀 [Datadog Quick Start](docs/DATADOG_QUICK_START.md) - Get started in 5 minutes
 
 ## Measured Impact
 

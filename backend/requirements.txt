@@ -10,4 +10,7 @@ pandas==2.0.3
 python-dotenv==1.0.0
 gunicorn==21.2.0
 eventlet==0.33.3
-requests==2.31.0 
+requests==2.31.0
+# Datadog APM and Monitoring
+ddtrace==2.9.0
+datadog==0.47.0 

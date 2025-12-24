@@ -14,6 +14,23 @@ Version: 1.1.0
 """
 
 import os
+# Load environment variables FIRST - before any other imports that might need them
+from dotenv import load_dotenv
+load_dotenv()
+
+# CRITICAL: Initialize Datadog patching BEFORE importing Flask
+# ddtrace must patch Flask before Flask is imported
+try:
+    from datadog_integration import init_datadog_early
+    init_datadog_early()  # This patches Flask before import
+    DATADOG_IMPORTED = True
+except ImportError:
+    DATADOG_IMPORTED = False
+except Exception as e:
+    # Log but don't fail if Datadog init fails
+    DATADOG_IMPORTED = False
+
+# Now import Flask (after Datadog patching)
 from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
@@ -26,7 +43,6 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 import pickle
 import logging
-from dotenv import load_dotenv
 import requests
 from requests.adapters import HTTPAdapter
 try:
@@ -39,8 +55,37 @@ import time
 # Import advanced AI models for occupancy prediction and energy optimization
 from ai_models import get_ai_models, init_models
 
-# Load environment variables from .env file
-load_dotenv()
+# Import Datadog integration functions (after Flask is imported)
+try:
+    from datadog_integration import (
+        setup_datadog_flask,
+        track_light_control, track_ai_prediction, track_energy_metrics,
+        track_weather_api_call, track_schedule_execution, track_websocket_event,
+        datadog_trace, DatadogSpan, is_datadog_enabled
+    )
+except ImportError:
+    # Create dummy functions if Datadog not available
+    def setup_datadog_flask(*args, **kwargs):
+        return False
+    def track_light_control(*args, **kwargs):
+        pass
+    def track_ai_prediction(*args, **kwargs):
+        pass
+    def track_energy_metrics(*args, **kwargs):
+        pass
+    def track_weather_api_call(*args, **kwargs):
+        pass
+    def track_schedule_execution(*args, **kwargs):
+        pass
+    def track_websocket_event(*args, **kwargs):
+        pass
+    class DatadogSpan:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
 
 # Configure logging for debugging and monitoring
 logging.basicConfig(
@@ -49,9 +94,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Log Datadog status
+if not DATADOG_IMPORTED:
+    logger.warning("Datadog integration not available - monitoring will be limited")
+
 # Initialize Flask application
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
+
+# Setup Datadog Flask tracing (after app is created)
+if DATADOG_IMPORTED:
+    setup_datadog_flask(app)
 
 # Configure CORS (Cross-Origin Resource Sharing) for production
 # Allows requests from Vercel deployment domains (including preview URLs) and localhost for development
@@ -102,6 +155,28 @@ CORS(app,
 # Allow all origins for Socket.IO and validate in connect handler
 socketio = SocketIO(app, cors_allowed_origins='*', allow_credentials=True, async_mode='eventlet')
 
+def safe_socket_emit(event, data, room=None):
+    """
+    Safely emit Socket.IO events with error handling.
+    Prevents background threads from crashing if socket emit fails.
+    
+    Args:
+        event: Event name
+        data: Data to emit
+        room: Optional room for namespaced events
+    """
+    try:
+        if room:
+            socketio.emit(event, data, room=room)
+        else:
+            socketio.emit(event, data)
+    except (OSError, IOError) as socket_error:
+        # Ignore socket cleanup errors (common with Eventlet)
+        if 'Bad file descriptor' not in str(socket_error):
+            logger.debug(f"Socket emit failed for {event}: {socket_error}")
+    except Exception as socket_error:
+        logger.debug(f"Socket emit failed for {event}: {socket_error}")
+
 # Production configuration based on environment variable
 if os.getenv('FLASK_ENV') == 'production':
     app.config['DEBUG'] = False
@@ -148,6 +223,27 @@ weather_cache = {
     'last_update': None,
     'cache_duration': 300  # 5 minutes in seconds
 }
+
+def get_demo_weather_data():
+    """Get demo weather data structure - reusable function to avoid duplication"""
+    return {
+        'main': {
+            'temp': 72,
+            'humidity': 65,
+            'pressure': 1013,
+            'feels_like': 70
+        },
+        'weather': [{
+            'main': 'Clouds',
+            'description': 'scattered clouds',
+            'icon': '03d'
+        }],
+        'clouds': {'all': 40},
+        'visibility': 10000,
+        'wind': {'speed': 5, 'deg': 180},
+        'sys': {'sunrise': 1640995200, 'sunset': 1641038400},
+        'name': WEATHER_CITY
+    }
 
 # Real-time weather update thread
 # Background thread that periodically updates weather data
@@ -267,7 +363,7 @@ def log_activity(action, room=None, details=None, user_id=1, ip_address=None):
             app.activity_logs = app.activity_logs[:1000]
         
         # Emit real-time update
-        socketio.emit('activity_logged', activity_log)
+        safe_socket_emit('activity_logged', activity_log)
         
         logger.info(f"Activity logged: {action} in {room} - {details}")
         
@@ -281,26 +377,14 @@ def get_weather_data():
     # Return cached data if still valid
     if (weather_cache['data'] and weather_cache['last_update'] and 
         (current_time - weather_cache['last_update']).seconds < weather_cache['cache_duration']):
+        # Track cache hit
+        if DATADOG_IMPORTED:
+            track_weather_api_call(success=True, cache_hit=True)
         return weather_cache['data']
     
     try:
         if WEATHER_API_KEY == 'demo_key':
-            weather_data = {
-                'main': {
-                    'temp': 20,
-                    'humidity': 65,
-                    'pressure': 1013
-                },
-                'weather': [{
-                    'main': 'Clouds',
-                    'description': 'scattered clouds',
-                    'icon': '03d'
-                }],
-                'clouds': {'all': 40},
-                'visibility': 10000,
-                'wind': {'speed': 5, 'deg': 180},
-                'sys': {'sunrise': 1640995200, 'sunset': 1641038400}
-            }
+            weather_data = get_demo_weather_data()
         else:
             # Real API call - Use coordinates if available for more accuracy
             try:
@@ -328,6 +412,10 @@ def get_weather_data():
                     if 'name' not in weather_data:
                         weather_data['name'] = WEATHER_CITY
                     logger.info(f"✅ Successfully fetched weather data for {location_str}")
+                    
+                    # Track successful weather API call
+                    if DATADOG_IMPORTED:
+                        track_weather_api_call(success=True, cache_hit=False)
                 elif response.status_code == 401:
                     logger.error("❌ Invalid OpenWeatherMap API key. Please check your WEATHER_API_KEY.")
                     raise Exception("Invalid API key")
@@ -351,42 +439,7 @@ def get_weather_data():
                     return weather_cache['data']
                 # Fall back to demo data immediately - DNS errors won't resolve
                 logger.warning("⚠️ No cached data available, using demo data due to connection/DNS error")
-                weather_data = {
-                    'main': {
-                        'temp': 72,
-                        'humidity': 65,
-                        'pressure': 1013,
-                        'feels_like': 70
-                    },
-                    'weather': [{
-                        'main': 'Clouds',
-                        'description': 'scattered clouds',
-                        'icon': '03d'
-                    }],
-                    'clouds': {'all': 40},
-                    'visibility': 10000,
-                    'wind': {'speed': 5, 'deg': 180},
-                    'sys': {'sunrise': 1640995200, 'sunset': 1641038400},
-                    'name': WEATHER_CITY
-                }
-                weather_data = {
-                    'main': {
-                        'temp': 72,
-                        'humidity': 65,
-                        'pressure': 1013,
-                        'feels_like': 70
-                    },
-                    'weather': [{
-                        'main': 'Clouds',
-                        'description': 'scattered clouds',
-                        'icon': '03d'
-                    }],
-                    'clouds': {'all': 40},
-                    'visibility': 10000,
-                    'wind': {'speed': 5, 'deg': 180},
-                    'sys': {'sunrise': 1640995200, 'sunset': 1641038400},
-                    'name': WEATHER_CITY
-                }
+                weather_data = get_demo_weather_data()
             except Exception as api_error:
                 logger.error(f"❌ Weather API call failed: {api_error}")
                 # Try to use cached data first
@@ -395,24 +448,7 @@ def get_weather_data():
                     return weather_cache['data']
                 # Fall back to demo data if no cache available
                 logger.warning("⚠️ No cached data available, using demo data due to API error")
-                weather_data = {
-                    'main': {
-                        'temp': 72,
-                        'humidity': 65,
-                        'pressure': 1013,
-                        'feels_like': 70
-                    },
-                    'weather': [{
-                        'main': 'Clouds',
-                        'description': 'scattered clouds',
-                        'icon': '03d'
-                    }],
-                    'clouds': {'all': 40},
-                    'visibility': 10000,
-                    'wind': {'speed': 5, 'deg': 180},
-                    'sys': {'sunrise': 1640995200, 'sunset': 1641038400},
-                    'name': WEATHER_CITY
-                }
+                weather_data = get_demo_weather_data()
         # Cache the data
         weather_cache['data'] = weather_data
         weather_cache['last_update'] = current_time
@@ -425,24 +461,7 @@ def get_weather_data():
             return weather_cache['data']
         # Fall back to demo data if no cache available
         logger.warning("⚠️ No cached data available, returning demo data due to exception")
-        return {
-            'main': {
-                'temp': 72,
-                'humidity': 65,
-                'pressure': 1013,
-                'feels_like': 70
-            },
-            'weather': [{
-                'main': 'Clouds',
-                'description': 'scattered clouds',
-                'icon': '03d'
-            }],
-            'clouds': {'all': 40},
-            'visibility': 10000,
-            'wind': {'speed': 5, 'deg': 180},
-            'sys': {'sunrise': 1640995200, 'sunset': 1641038400},
-            'name': WEATHER_CITY
-        }
+        return get_demo_weather_data()
 
 def get_weather_lighting_adjustment():
     """
@@ -542,7 +561,7 @@ def emit_weather_update():
                 'timestamp': datetime.now().isoformat()
             }
             
-            socketio.emit('weather_update', weather_update)
+            safe_socket_emit('weather_update', weather_update)
             logger.info("Weather update emitted via WebSocket")
         else:
             logger.warning("Weather data unavailable, using demo data")
@@ -572,7 +591,7 @@ def emit_weather_update():
                 'natural_light_factor': 0.32,
                 'timestamp': datetime.now().isoformat()
             }
-            socketio.emit('weather_update', demo_weather)
+            safe_socket_emit('weather_update', demo_weather)
             logger.info("Demo weather update emitted via WebSocket")
         except Exception as demo_error:
             logger.error(f"Error emitting demo weather update: {demo_error}")
@@ -580,17 +599,31 @@ def emit_weather_update():
 def weather_update_loop():
     """Background thread for real-time weather updates"""
     logger.info("Weather update loop started")
+    consecutive_errors = 0
+    max_consecutive_errors = 5
+    
     while True:
         try:
             emit_weather_update()
+            consecutive_errors = 0  # Reset error count on success
             time.sleep(weather_update_interval)  # Update every 5 minutes
         except Exception as e:
-            logger.error(f"Error in weather update loop: {e}")
-            time.sleep(60)  # Wait 1 minute before retrying
+            consecutive_errors += 1
+            logger.error(f"Error in weather update loop (attempt {consecutive_errors}/{max_consecutive_errors}): {e}")
+            
+            if consecutive_errors >= max_consecutive_errors:
+                logger.error("Too many consecutive errors in weather update loop. Waiting longer before retry.")
+                time.sleep(300)  # Wait 5 minutes before retrying after many errors
+            else:
+                time.sleep(60)  # Wait 1 minute before retrying
 
 def execute_schedule_event(room, event):
     """Execute a scheduled event for a room"""
     try:
+        # Track schedule execution
+        if DATADOG_IMPORTED:
+            track_schedule_execution(room, event.get('action', 'unknown'))
+        
         if event['action'] == 'on':
             # Apply weather adjustments for brightness
             base_brightness = event.get('brightness', 100)
@@ -603,7 +636,7 @@ def execute_schedule_event(room, event):
                 lights_state[room]['brightness'] = min(100, max(0, adjusted_brightness))
                 
                 # Emit socket event
-                socketio.emit('light_update', {
+                safe_socket_emit('light_update', {
                     'room': room,
                     'state': lights_state[room],
                     'source': 'schedule'
@@ -617,7 +650,7 @@ def execute_schedule_event(room, event):
                 lights_state[room]['brightness'] = 0
                 
                 # Emit socket event
-                socketio.emit('light_update', {
+                safe_socket_emit('light_update', {
                     'room': room,
                     'state': lights_state[room],
                     'source': 'schedule'
@@ -663,13 +696,24 @@ def check_and_execute_schedules():
 
 def schedule_execution_loop():
     """Background loop for schedule execution"""
+    logger.info("Schedule execution loop started")
+    consecutive_errors = 0
+    max_consecutive_errors = 10
+    
     while True:
         try:
             check_and_execute_schedules()
+            consecutive_errors = 0  # Reset error count on success
             time.sleep(60)  # Check every minute
         except Exception as e:
-            logger.error(f"Error in schedule execution loop: {e}")
-            time.sleep(60)  # Continue after error
+            consecutive_errors += 1
+            logger.error(f"Error in schedule execution loop (attempt {consecutive_errors}/{max_consecutive_errors}): {e}")
+            
+            if consecutive_errors >= max_consecutive_errors:
+                logger.error("Too many consecutive errors in schedule loop. Waiting longer before retry.")
+                time.sleep(300)  # Wait 5 minutes after many errors
+            else:
+                time.sleep(60)  # Continue after error
 
 # Database setup
 def init_db():
@@ -687,26 +731,33 @@ def init_db():
         os.makedirs(instance_dir, exist_ok=True)
         
         db_path = os.path.join(instance_dir, 'smart_lights.db')
-        conn = sqlite3.connect(db_path)
-        c = conn.cursor()
         
-        # Create lights table: stores current state of all room lights
-        c.execute('''CREATE TABLE IF NOT EXISTS lights
-                     (room TEXT PRIMARY KEY, status TEXT, brightness INTEGER, 
-                      color_temperature TEXT, motion_detected BOOLEAN)''')
-        
-        # Create energy_usage table: tracks daily consumption and savings
-        c.execute('''CREATE TABLE IF NOT EXISTS energy_usage
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, 
-                      daily_consumption REAL, cost_saved REAL, usage_history TEXT)''')
-        
-        # Create schedules table: stores automated scheduling configuration
-        c.execute('''CREATE TABLE IF NOT EXISTS schedules
-                     (room TEXT PRIMARY KEY, enabled BOOLEAN, vacation_mode BOOLEAN,
-                      sunrise_sunset BOOLEAN, daily_schedule TEXT)''')
-        
-        conn.commit()
-        conn.close()
+        # Use context manager for proper connection handling
+        with sqlite3.connect(db_path, timeout=10.0) as conn:
+            # Enable WAL mode for better concurrency
+            conn.execute('PRAGMA journal_mode=WAL')
+            # Set timeout for busy connections
+            conn.execute('PRAGMA busy_timeout=30000')
+            
+            c = conn.cursor()
+            
+            # Create lights table: stores current state of all room lights
+            c.execute('''CREATE TABLE IF NOT EXISTS lights
+                         (room TEXT PRIMARY KEY, status TEXT, brightness INTEGER, 
+                          color_temperature TEXT, motion_detected BOOLEAN)''')
+            
+            # Create energy_usage table: tracks daily consumption and savings
+            c.execute('''CREATE TABLE IF NOT EXISTS energy_usage
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, 
+                          daily_consumption REAL, cost_saved REAL, usage_history TEXT)''')
+            
+            # Create schedules table: stores automated scheduling configuration
+            c.execute('''CREATE TABLE IF NOT EXISTS schedules
+                         (room TEXT PRIMARY KEY, enabled BOOLEAN, vacation_mode BOOLEAN,
+                          sunrise_sunset BOOLEAN, daily_schedule TEXT)''')
+            
+            conn.commit()
+            # Connection automatically closed by context manager
         logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing database: {e}")
@@ -761,9 +812,19 @@ def predict_occupancy(room):
         weather_data = get_weather_data()
         # User activity data can be fetched from logs for more accurate predictions
         user_activity = None
-        prob = advanced_occupancy_predictor.predict(now.isoformat(), room, weather_data, user_activity)
-        logger.info(f"Advanced AI Prediction for {room}: {prob:.2f} probability")
-        return prob > 0.5
+        
+        # Use Datadog span for tracing if available
+        if DATADOG_IMPORTED:
+            with DatadogSpan('ai.predict_occupancy', service='ai-models', resource=room):
+                prob = advanced_occupancy_predictor.predict(now.isoformat(), room, weather_data, user_activity)
+                logger.info(f"Advanced AI Prediction for {room}: {prob:.2f} probability")
+                # Track AI prediction metrics
+                track_ai_prediction(room, prob > 0.5, prob)
+                return prob > 0.5
+        else:
+            prob = advanced_occupancy_predictor.predict(now.isoformat(), room, weather_data, user_activity)
+            logger.info(f"Advanced AI Prediction for {room}: {prob:.2f} probability")
+            return prob > 0.5
     except Exception as e:
         logger.error(f"Error in advanced predict_occupancy for {room}: {e}", exc_info=True)
         return False
@@ -822,49 +883,29 @@ def ai_control_lights():
                         lights_state[room]['status'] = 'on'
                         lights_state[room]['brightness'] = optimized_brightness
                         logger.info(f"AI turned ON lights in {room} (brightness: {optimized_brightness})")
-                        try:
-                            socketio.emit('light_update', {
-                                'room': room,
-                                'state': lights_state[room]
-                            })
-                        except Exception as socket_error:
-                            logger.warning(f"Socket emit failed for light update: {socket_error}")
-                        try:
-                            socketio.emit('ai_prediction', {
-                                'room': room,
-                                'prediction': 'occupied',
-                                'confidence': 1.0  # Optionally, pass probability
-                            })
-                        except Exception as socket_error:
-                            logger.warning(f"Socket emit failed for AI prediction: {socket_error}")
+                        safe_socket_emit('light_update', {
+                            'room': room,
+                            'state': lights_state[room]
+                        })
+                        safe_socket_emit('ai_prediction', {
+                            'room': room,
+                            'prediction': 'occupied',
+                            'confidence': 1.0  # Optionally, pass probability
+                        })
                 else:
                     # Turn off lights if not occupied
                     if lights_state[room]['status'] == 'on':
                         lights_state[room]['status'] = 'off'
                         lights_state[room]['brightness'] = 0
                         logger.info(f"AI turned OFF lights in {room} (no occupancy predicted)")
-                        try:
-                            socketio.emit('light_update', {
-                                'room': room,
-                                'state': lights_state[room]
-                            })
-                        except (OSError, IOError) as socket_error:
-                            # Ignore socket cleanup errors (common with Eventlet)
-                            if 'Bad file descriptor' not in str(socket_error):
-                                logger.debug(f"Socket emit failed for light update: {socket_error}")
-                        except Exception as socket_error:
-                            logger.debug(f"Socket emit failed for light update: {socket_error}")
-                        try:
-                            socketio.emit('auto_off', {
-                                'room': room,
-                                'reason': 'AI detected no occupancy'
-                            })
-                        except (OSError, IOError) as socket_error:
-                            # Ignore socket cleanup errors (common with Eventlet)
-                            if 'Bad file descriptor' not in str(socket_error):
-                                logger.debug(f"Socket emit failed for auto_off: {socket_error}")
-                        except Exception as socket_error:
-                            logger.debug(f"Socket emit failed for auto_off: {socket_error}")
+                        safe_socket_emit('light_update', {
+                            'room': room,
+                            'state': lights_state[room]
+                        })
+                        safe_socket_emit('auto_off', {
+                            'room': room,
+                            'reason': 'AI detected no occupancy'
+                        })
             except Exception as room_error:
                 logger.error(f"Error processing room {room} in AI control: {room_error}")
                 continue
@@ -874,14 +915,24 @@ def ai_control_lights():
 def ai_control_loop():
     """Background thread for AI control"""
     logger.info("AI Control loop started")
+    consecutive_errors = 0
+    max_consecutive_errors = 10
+    
     while True:
         try:
             if ai_mode_enabled:
                 ai_control_lights()
+            consecutive_errors = 0  # Reset error count on success
             time.sleep(30)  # Check every 30 seconds
         except Exception as e:
-            logger.error(f"Error in AI control loop: {e}")
-            time.sleep(30)  # Continue loop even if there's an error
+            consecutive_errors += 1
+            logger.error(f"Error in AI control loop (attempt {consecutive_errors}/{max_consecutive_errors}): {e}")
+            
+            if consecutive_errors >= max_consecutive_errors:
+                logger.error("Too many consecutive errors in AI control loop. Waiting longer before retry.")
+                time.sleep(180)  # Wait 3 minutes after many errors
+            else:
+                time.sleep(30)  # Continue loop even if there's an error
 
 
 
@@ -1063,8 +1114,13 @@ def control_light(room):
             lights_state[room]['status'] = 'on'
             lights_state[room]['brightness'] = brightness
         
+        # Track light control metrics
+        if DATADOG_IMPORTED:
+            track_light_control(room, action, brightness)
+            track_websocket_event('light_update', room)
+        
         # Emit real-time update via WebSocket
-        socketio.emit('light_update', {
+        safe_socket_emit('light_update', {
             'room': room,
             'state': lights_state[room]
         })
@@ -1106,7 +1162,7 @@ def toggle_light(room):
         )
         
         # Emit socket event
-        socketio.emit('light_update', {
+        safe_socket_emit('light_update', {
             'room': room,
             'state': lights_state[room]
         })
@@ -1180,7 +1236,7 @@ def set_brightness(room):
         )
         
         # Emit real-time update via WebSocket
-        socketio.emit('light_update', {
+        safe_socket_emit('light_update', {
             'room': room,
             'state': lights_state[room]
         })
@@ -1220,7 +1276,7 @@ def set_color_temperature(room):
         )
         
         # Emit socket event
-        socketio.emit('light_update', {
+        safe_socket_emit('light_update', {
             'room': room,
             'state': lights_state[room]
         })
@@ -1258,7 +1314,7 @@ def bulk_control_lights():
             affected_rooms.append(room)
             
             # Emit socket event for each room
-            socketio.emit('light_update', {
+            safe_socket_emit('light_update', {
                 'room': room,
                 'state': lights_state[room]
             })
@@ -1325,14 +1381,11 @@ def toggle_ai_mode():
         )
         
         # Emit socket event with error handling
-        try:
-            socketio.emit('ai_mode_update', {
-                'enabled': ai_mode_enabled,
-                'timestamp': datetime.now().isoformat()
-            })
-            logger.info("AI mode update socket event emitted successfully")
-        except Exception as socket_error:
-            logger.warning(f"Socket emit failed for AI mode update: {socket_error}")
+        safe_socket_emit('ai_mode_update', {
+            'enabled': ai_mode_enabled,
+            'timestamp': datetime.now().isoformat()
+        })
+        logger.info("AI mode update socket event emitted successfully")
         
         if ai_mode_enabled:
             # Trigger initial AI control with error handling
@@ -1527,7 +1580,7 @@ def apply_weather_optimization():
                 lights_state[room]['brightness'] = max(0, min(100, weather_optimized))
                 
                 # Emit socket event
-                socketio.emit('light_update', {
+                safe_socket_emit('light_update', {
                     'room': room,
                     'state': lights_state[room],
                     'source': 'weather_optimization',
@@ -1707,7 +1760,7 @@ def control_all_lights():
                     lights_state[room]['status'] = 'off'
             
             # Emit socket event for each room
-            socketio.emit('light_update', {
+            safe_socket_emit('light_update', {
                 'room': room,
                 'state': lights_state[room]
             })
@@ -1937,6 +1990,11 @@ def handle_connect():
         logger.warning(f'Connection rejected from unauthorized origin: {origin}')
         return False  # Reject connection
     logger.info(f'Client connected from: {origin}')
+    
+    # Track WebSocket connection
+    if DATADOG_IMPORTED:
+        track_websocket_event('connect')
+    
     emit('connected', {'data': 'Connected'})
 
 @socketio.on('disconnect')
@@ -1956,7 +2014,12 @@ def handle_motion(data):
     room = data.get('room')
     if room in lights_state:
         lights_state[room]['motion_detected'] = True
-        socketio.emit('motion_update', {'room': room})
+        
+        # Track motion detection
+        if DATADOG_IMPORTED:
+            track_websocket_event('motion_detected', room)
+        
+        safe_socket_emit('motion_update', {'room': room})
         logger.info(f'Motion detected in {room}')
 
 # CORS headers handler - add headers to all responses
