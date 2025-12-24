@@ -52,8 +52,8 @@ except ImportError:
 import threading
 import time
 
-# Import advanced AI models for occupancy prediction and energy optimization
-from ai_models import get_ai_models, init_models
+# Import advanced AI models lazily - don't import at module level to avoid blocking
+# These will be imported on first use
 
 # Import Datadog integration functions (after Flask is imported)
 try:
@@ -763,18 +763,107 @@ def init_db():
         logger.error(f"Error initializing database: {e}")
         raise
 
-# Initialize database
-init_db()
-
-# Initialize advanced AI models
-ai_models = get_ai_models()
-advanced_occupancy_predictor = ai_models['occupancy_predictor']
-advanced_energy_optimizer = ai_models['energy_optimizer']
-user_behavior_learner = ai_models['behavior_learner']
-advanced_schedule_optimizer = ai_models['schedule_optimizer']
+# Lazy initialization - don't initialize at module level to avoid blocking Gunicorn
+# These will be initialized on first use or in the startup function
+_db_initialized = False
+_ai_models_initialized = False
+ai_models = None
+advanced_occupancy_predictor = None
+advanced_energy_optimizer = None
+user_behavior_learner = None
+advanced_schedule_optimizer = None
 
 # AI Mode state
 ai_mode_enabled = False
+
+def ensure_db_initialized():
+    """Ensure database is initialized (lazy initialization)"""
+    global _db_initialized
+    if not _db_initialized:
+        try:
+            init_db()
+            _db_initialized = True
+        except Exception as e:
+            logger.error(f"Database initialization failed: {e}")
+            # Continue anyway - app can work without database for basic functionality
+
+def ensure_ai_models_initialized():
+    """Ensure AI models are initialized (lazy initialization)"""
+    global _ai_models_initialized, ai_models, advanced_occupancy_predictor
+    global advanced_energy_optimizer, user_behavior_learner, advanced_schedule_optimizer
+    
+    if not _ai_models_initialized:
+        try:
+            # Lazy import - only import when needed
+            from ai_models import get_ai_models
+            ai_models = get_ai_models()
+            advanced_occupancy_predictor = ai_models.get('occupancy_predictor')
+            advanced_energy_optimizer = ai_models.get('energy_optimizer')
+            user_behavior_learner = ai_models.get('behavior_learner')
+            advanced_schedule_optimizer = ai_models.get('schedule_optimizer')
+            _ai_models_initialized = True
+        except Exception as e:
+            logger.error(f"AI models initialization failed: {e}")
+            # Set to None to indicate models are not available
+            advanced_occupancy_predictor = None
+            advanced_energy_optimizer = None
+            user_behavior_learner = None
+            advanced_schedule_optimizer = None
+
+def initialize_app_background():
+    """Initialize app components in background (non-blocking for Gunicorn)"""
+    # Add a small delay to ensure worker is fully ready
+    time.sleep(0.5)
+    
+    try:
+        # Initialize database (fast operation)
+        ensure_db_initialized()
+        logger.info("✅ Database initialized")
+    except Exception as db_error:
+        logger.warning(f"⚠️ Database initialization failed: {db_error}")
+    
+    try:
+        # Initialize sample activity logs
+        init_sample_logs()
+        logger.info("✅ Activity logs initialized")
+    except Exception as log_error:
+        logger.warning(f"⚠️ Activity logs initialization failed: {log_error}")
+    
+    # Start background threads (non-critical - app can run without them)
+    try:
+        # Initialize AI models in background (non-blocking)
+        # Lazy import to avoid blocking module import
+        from ai_models import init_models
+        ai_init_thread = threading.Thread(target=init_models, daemon=True)
+        ai_init_thread.start()
+        logger.info("✅ AI models initialization started")
+    except Exception as ai_error:
+        logger.warning(f"⚠️ AI models initialization failed: {ai_error}")
+    
+    try:
+        schedule_thread = threading.Thread(target=schedule_execution_loop, daemon=True)
+        schedule_thread.start()
+        logger.info("✅ Schedule execution loop started")
+    except Exception as schedule_error:
+        logger.warning(f"⚠️ Schedule loop failed: {schedule_error}")
+    
+    try:
+        ai_thread = threading.Thread(target=ai_control_loop, daemon=True)
+        ai_thread.start()
+        logger.info("✅ AI control loop started")
+    except Exception as ai_control_error:
+        logger.warning(f"⚠️ AI control loop failed: {ai_control_error}")
+    
+    try:
+        weather_thread = threading.Thread(target=weather_update_loop, daemon=True)
+        weather_thread.start()
+        logger.info("✅ Weather update loop started")
+    except Exception as weather_error:
+        logger.warning(f"⚠️ Weather loop failed: {weather_error}")
+    
+    logger.info("📊 Energy monitoring active")
+    logger.info("🤖 AI prediction models loading in background")
+    logger.info("💡 Smart automation enabled")
 
 
 def get_time_of_day():
@@ -807,6 +896,13 @@ def predict_occupancy(room):
         bool: True if room is predicted to be occupied, False otherwise
     """
     try:
+        # Ensure AI models are initialized
+        ensure_ai_models_initialized()
+        
+        if not advanced_occupancy_predictor:
+            logger.warning("AI models not available, using fallback prediction")
+            return False
+        
         now = datetime.now()
         # Get weather data for context-aware predictions
         weather_data = get_weather_data()
@@ -848,6 +944,13 @@ def optimize_brightness(room, current_brightness):
         int: Optimized brightness level (0-100)
     """
     try:
+        # Ensure AI models are initialized
+        ensure_ai_models_initialized()
+        
+        if not advanced_energy_optimizer or not advanced_occupancy_predictor:
+            logger.warning("AI models not available, using fallback brightness")
+            return 80
+        
         now = datetime.now()
         weather_data = get_weather_data()
         natural_light_level = get_natural_light_factor()
@@ -1449,7 +1552,7 @@ def get_ai_status():
             'current_time': current_time.isoformat(),
             'time_of_day': time_of_day,
             'predictions': predictions,
-            'user_patterns': user_behavior_learner.get_user_patterns(), # Assuming user_behavior_learner has this method
+            'user_patterns': user_behavior_learner.get_user_patterns() if user_behavior_learner else {}, # Assuming user_behavior_learner has this method
             'weather': {
                 'data': weather_data,
                 'lighting_adjustment': round(weather_adjustment, 2),
@@ -2250,54 +2353,8 @@ if __name__ == '__main__':
     try:
         logger.info("🚀 Starting AI Smart Light Control System...")
         
-        # Initialize database first (critical)
-        try:
-            init_db()
-            logger.info("✅ Database initialized successfully")
-        except Exception as db_error:
-            logger.error(f"❌ Database initialization failed: {db_error}")
-            # Continue anyway - app can work without database for basic functionality
-        
-        # Initialize sample activity logs
-        try:
-            init_sample_logs()
-            logger.info("✅ Activity logs initialized")
-        except Exception as log_error:
-            logger.warning(f"⚠️ Activity logs initialization failed: {log_error}")
-        
-        # Start background threads (non-critical - app can run without them)
-        try:
-            # Initialize AI models in background (non-blocking)
-            ai_init_thread = threading.Thread(target=init_models, daemon=True)
-            ai_init_thread.start()
-            logger.info("✅ AI models initialization started")
-        except Exception as ai_error:
-            logger.warning(f"⚠️ AI models initialization failed: {ai_error}")
-        
-        try:
-            schedule_thread = threading.Thread(target=schedule_execution_loop, daemon=True)
-            schedule_thread.start()
-            logger.info("✅ Schedule execution loop started")
-        except Exception as schedule_error:
-            logger.warning(f"⚠️ Schedule loop failed: {schedule_error}")
-        
-        try:
-            ai_thread = threading.Thread(target=ai_control_loop, daemon=True)
-            ai_thread.start()
-            logger.info("✅ AI control loop started")
-        except Exception as ai_control_error:
-            logger.warning(f"⚠️ AI control loop failed: {ai_control_error}")
-        
-        try:
-            weather_thread = threading.Thread(target=weather_update_loop, daemon=True)
-            weather_thread.start()
-            logger.info("✅ Weather update loop started")
-        except Exception as weather_error:
-            logger.warning(f"⚠️ Weather loop failed: {weather_error}")
-        
-        logger.info("📊 Energy monitoring active")
-        logger.info("🤖 AI prediction models loaded")
-        logger.info("💡 Smart automation enabled")
+        # Initialize app components
+        initialize_app_background()
         
         # Use environment variable for port or default to 5000
         port = int(os.getenv('PORT', 5000))

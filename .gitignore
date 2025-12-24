@@ -131,3 +131,4 @@ mobile/.env.production
 *.orig.*
 mobile/ios/
 mobile/android/
+backend/.env

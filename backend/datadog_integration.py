@@ -96,10 +96,20 @@ def init_datadog_early():
         try:
             # Only initialize if we have the API key - but don't block on connection
             # The datadog library will buffer metrics locally if connection fails
-            initialize(
-                api_key=dd_api_key,
-                app_key=os.getenv('DD_APP_KEY', ''),  # Optional
-            )
+            # Run in background thread to avoid any blocking during import
+            import threading
+            def init_statsd():
+                try:
+                    initialize(
+                        api_key=dd_api_key,
+                        app_key=os.getenv('DD_APP_KEY', ''),  # Optional
+                    )
+                except Exception:
+                    pass  # Don't fail if StatsD init fails
+            
+            # Start in background thread to avoid blocking
+            statsd_thread = threading.Thread(target=init_statsd, daemon=True)
+            statsd_thread.start()
         except Exception as init_error:
             # Don't fail if StatsD init fails - APM tracing will still work
             # Custom metrics might not work, but the app will function
