@@ -5,6 +5,16 @@ This ensures proper initialization and prevents worker timeouts
 
 import os
 import logging
+import time as time_module
+
+# #region agent log
+_debug_log_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.cursor', 'debug.log') if '__file__' in globals() else '/tmp/debug.log'
+try:
+    os.makedirs(os.path.dirname(_debug_log_path), exist_ok=True)
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:10","message":"Gunicorn config loaded","hypothesisId":"D","sessionId":"debug-session","runId":"run1","data":{{"timeout":{int(os.getenv("TIMEOUT", "180"))}}}}}\n')
+except: pass
+# #endregion
 
 # Get logger
 logger = logging.getLogger(__name__)
@@ -19,6 +29,13 @@ def when_ready(server):
 
 def post_fork(server, worker):
     """Called just after a worker has been forked"""
+    # #region agent log
+    _fork_time = time_module.time()
+    try:
+        with open(_debug_log_path, 'a') as f:
+            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:20","message":"post_fork called","hypothesisId":"E","sessionId":"debug-session","runId":"run1","data":{{"worker_pid":{worker.pid}}}}}\n')
+    except: pass
+    # #endregion
     logger.info(f"🔄 Worker {worker.pid} forked - starting background initialization")
     # Initialize app components after worker is forked (non-blocking)
     # Use a small delay to ensure worker is fully ready before starting init
@@ -26,17 +43,50 @@ def post_fork(server, worker):
     import time
     
     def delayed_init():
+        # #region agent log
+        try:
+            with open(_debug_log_path, 'a') as f:
+                f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:28","message":"delayed_init started","hypothesisId":"E","sessionId":"debug-session","runId":"run1"}}\n')
+        except: pass
+        # #endregion
         # Small delay to ensure worker is ready
         time.sleep(0.2)
         try:
+            # #region agent log
+            _import_start = time_module.time()
+            try:
+                with open(_debug_log_path, 'a') as f:
+                    f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:32","message":"Importing initialize_app_background","hypothesisId":"E","sessionId":"debug-session","runId":"run1"}}\n')
+            except: pass
+            # #endregion
             from app import initialize_app_background
+            # #region agent log
+            _import_time = time_module.time() - _import_start
+            try:
+                with open(_debug_log_path, 'a') as f:
+                    f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:33","message":"Import complete","data":{{"import_time_ms":{_import_time*1000:.2f}}},"hypothesisId":"E","sessionId":"debug-session","runId":"run1"}}\n')
+            except: pass
+            # #endregion
             initialize_app_background()
         except Exception as e:
             logger.error(f"Error initializing app in worker: {e}")
+            # #region agent log
+            try:
+                with open(_debug_log_path, 'a') as f:
+                    f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:35","message":"Initialization error","data":{{"error":str(e)}},"hypothesisId":"E","sessionId":"debug-session","runId":"run1"}}\n')
+            except: pass
+            # #endregion
     
     # Run in background thread to avoid blocking worker
     init_thread = threading.Thread(target=delayed_init, daemon=True)
     init_thread.start()
+    # #region agent log
+    _fork_complete_time = time_module.time() - _fork_time
+    try:
+        with open(_debug_log_path, 'a') as f:
+            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:40","message":"post_fork complete","data":{{"fork_time_ms":{_fork_complete_time*1000:.2f}}},"hypothesisId":"E","sessionId":"debug-session","runId":"run1"}}\n')
+    except: pass
+    # #endregion
     logger.info(f"✅ Background initialization thread started for worker {worker.pid}")
 
 def pre_fork(server, worker):

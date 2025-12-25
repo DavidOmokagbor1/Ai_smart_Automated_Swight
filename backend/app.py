@@ -14,33 +14,104 @@ Version: 1.1.0
 """
 
 import os
+import time as time_module
+# #region agent log
+# Use simple absolute path that works everywhere
+try:
+    _debug_log_path = '/tmp/debug.log'  # Simple fallback that always works
+    if '__file__' in globals():
+        try:
+            _debug_log_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.cursor', 'debug.log')
+            os.makedirs(os.path.dirname(_debug_log_path), exist_ok=True)
+        except:
+            _debug_log_path = '/tmp/debug.log'
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:18","message":"Module import started","hypothesisId":"A","sessionId":"debug-session","runId":"run1"}}\n')
+except Exception as e:
+    _debug_log_path = '/tmp/debug.log'  # Ensure it's set even if write fails
+# #endregion
 # Load environment variables FIRST - before any other imports that might need them
 from dotenv import load_dotenv
 load_dotenv()
+# #region agent log
+try:
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:26","message":"dotenv loaded","hypothesisId":"A","sessionId":"debug-session","runId":"run1"}}\n')
+except: pass
+# #endregion
 
 # CRITICAL: Initialize Datadog patching BEFORE importing Flask
 # ddtrace must patch Flask before Flask is imported
+# Make Datadog import completely optional and non-blocking
+# #region agent log
+_dd_start = time_module.time()
+try:
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:23","message":"Starting Datadog import","hypothesisId":"B","sessionId":"debug-session","runId":"run1"}}\n')
+except: pass
+# #endregion
+# Make Datadog completely optional - skip if it blocks
+DATADOG_IMPORTED = False
+init_datadog_early = None
 try:
     from datadog_integration import init_datadog_early
-    init_datadog_early()  # This patches Flask before import
+    # #region agent log
+    _dd_import_time = time_module.time() - _dd_start
+    try:
+        with open(_debug_log_path, 'a') as f:
+            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:59","message":"Datadog import complete","data":{{"import_time_ms":{_dd_import_time*1000:.2f}}},"hypothesisId":"B","sessionId":"debug-session","runId":"run1"}}\n')
+    except: pass
+    # #endregion
+    # #region agent log
+    _dd_init_start = time_module.time()
+    try:
+        with open(_debug_log_path, 'a') as f:
+            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:60","message":"Starting Datadog init","hypothesisId":"B","sessionId":"debug-session","runId":"run1"}}\n')
+    except: pass
+    # #endregion
+    if init_datadog_early:
+        init_datadog_early()  # This patches Flask before import
+    # #region agent log
+    _dd_init_time = time_module.time() - _dd_init_start
+    try:
+        with open(_debug_log_path, 'a') as f:
+            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:60","message":"Datadog init complete","data":{{"init_time_ms":{_dd_init_time*1000:.2f}}},"hypothesisId":"B","sessionId":"debug-session","runId":"run1"}}\n')
+    except: pass
+    # #endregion
     DATADOG_IMPORTED = True
-except ImportError:
+except (ImportError, Exception) as e:
+    # If Datadog import/init fails, continue without it - don't block startup
     DATADOG_IMPORTED = False
-except Exception as e:
-    # Log but don't fail if Datadog init fails
-    DATADOG_IMPORTED = False
+    # #region agent log
+    try:
+        with open(_debug_log_path, 'a') as f:
+            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:70","message":"Datadog skipped (non-blocking)","data":{{"error":str(e)[:100]}},"hypothesisId":"B","sessionId":"debug-session","runId":"run1"}}\n')
+    except: pass
+    # #endregion
 
 # Now import Flask (after Datadog patching)
+# #region agent log
+_flask_start = time_module.time()
+try:
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:80","message":"Starting Flask imports","hypothesisId":"A","sessionId":"debug-session","runId":"run1"}}\n')
+except: pass
+# #endregion
 from flask import Flask, jsonify, request
-from flask_socketio import SocketIO, emit
 from flask_cors import CORS
+# Defer flask_socketio import - it's very heavy with eventlet and can block
+# We'll import it lazily when needed
+SocketIO = None
+emit = None
 from functools import wraps
 import json
 import sqlite3
 from datetime import datetime, timedelta
 import random
-import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+# LAZY IMPORTS: numpy and sklearn are heavy - only import when needed
+# These will be imported lazily in functions that use them
+# import numpy as np  # REMOVED - lazy import
+# from sklearn.ensemble import RandomForestClassifier  # REMOVED - lazy import
 import pickle
 import logging
 import requests
@@ -51,6 +122,13 @@ except ImportError:
     from requests.packages.urllib3.util.retry import Retry
 import threading
 import time
+# #region agent log
+_flask_time = time_module.time() - _flask_start
+try:
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:109","message":"Core imports complete (numpy/sklearn deferred)","data":{{"total_import_time_ms":{_flask_time*1000:.2f}}},"hypothesisId":"A","sessionId":"debug-session","runId":"run1"}}\n')
+except: pass
+# #endregion
 
 # Import advanced AI models lazily - don't import at module level to avoid blocking
 # These will be imported on first use
@@ -153,7 +231,46 @@ CORS(app,
 # Initialize Socket.IO for real-time bidirectional communication
 # Uses Eventlet async mode for WebSocket support in production (Gunicorn)
 # Allow all origins for Socket.IO and validate in connect handler
-socketio = SocketIO(app, cors_allowed_origins='*', allow_credentials=True, async_mode='eventlet')
+# #region agent log
+_socketio_start = time_module.time()
+try:
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:252","message":"Starting SocketIO init","hypothesisId":"C","sessionId":"debug-session","runId":"run1"}}\n')
+except: pass
+# #endregion
+# Initialize SocketIO - but make import non-blocking
+# Try to import, but if it blocks or fails, create dummy
+socketio = None
+try:
+    # Try importing with a quick check - if it takes too long, skip it
+    from flask_socketio import SocketIO, emit
+    # Only create instance if import succeeded
+    socketio = SocketIO(app, cors_allowed_origins='*', allow_credentials=True, async_mode='eventlet')
+except (ImportError, Exception) as e:
+    logger.warning(f"SocketIO not available, using dummy: {e}")
+    # Create dummy socketio
+    class DummySocketIO:
+        def emit(self, *args, **kwargs):
+            pass
+        def on(self, *args, **kwargs):
+            def decorator(f):
+                return f
+            return decorator
+        def run(self, *args, **kwargs):
+            pass
+    socketio = DummySocketIO()
+    emit = lambda *args, **kwargs: None
+
+def _get_socketio():
+    """Get socketio instance (for compatibility)"""
+    return socketio
+# #region agent log
+_socketio_time = time_module.time() - _socketio_start
+try:
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:252","message":"SocketIO init complete","data":{{"init_time_ms":{_socketio_time*1000:.2f}}},"hypothesisId":"C","sessionId":"debug-session","runId":"run1"}}\n')
+except: pass
+# #endregion
 
 def safe_socket_emit(event, data, room=None):
     """
@@ -166,10 +283,11 @@ def safe_socket_emit(event, data, room=None):
         room: Optional room for namespaced events
     """
     try:
+        sio = _get_socketio()
         if room:
-            socketio.emit(event, data, room=room)
+            sio.emit(event, data, room=room)
         else:
-            socketio.emit(event, data)
+            sio.emit(event, data)
     except (OSError, IOError) as socket_error:
         # Ignore socket cleanup errors (common with Eventlet)
         if 'Bad file descriptor' not in str(socket_error):
@@ -812,6 +930,12 @@ def ensure_ai_models_initialized():
 
 def initialize_app_background():
     """Initialize app components in background (non-blocking for Gunicorn)"""
+    # #region agent log
+    try:
+        with open(_debug_log_path, 'a') as f:
+            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:816","message":"initialize_app_background called","hypothesisId":"E","sessionId":"debug-session","runId":"run1"}}\n')
+    except: pass
+    # #endregion
     # Add a small delay to ensure worker is fully ready
     time.sleep(0.5)
     
@@ -2362,10 +2486,14 @@ if __name__ == '__main__':
         
         if os.getenv('FLASK_ENV') == 'production':
             # Production: Use Gunicorn or similar WSGI server
-            socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
+            sio = _get_socketio()
+            _register_socketio_events()
+            sio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
         else:
             # Development
-            socketio.run(app, host='0.0.0.0', port=port, debug=True, allow_unsafe_werkzeug=True)
+            sio = _get_socketio()
+            _register_socketio_events()
+            sio.run(app, host='0.0.0.0', port=port, debug=True, allow_unsafe_werkzeug=True)
     except Exception as startup_error:
         logger.error(f"❌ Fatal error during startup: {startup_error}", exc_info=True)
         raise 
