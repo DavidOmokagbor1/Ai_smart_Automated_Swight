@@ -132,3 +132,8 @@ mobile/.env.production
 mobile/ios/
 mobile/android/
 backend/.env
+frontend/.env
+frontend/.env.development
+frontend/.env.production
+frontend/.env.local
+frontend/.env.*.local
