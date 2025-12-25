@@ -20,4 +20,19 @@ services:
         sync: false  # Optional - set in Render dashboard
       - key: WEATHER_CITY
         value: "New York"
+      # Datadog Configuration
+      - key: DD_API_KEY
+        sync: false  # Must be set in Render dashboard - DO NOT commit the actual key
+      - key: DD_SERVICE
+        value: ai-smart-lights
+      - key: DD_ENV
+        value: production
+      - key: DD_VERSION
+        value: 1.1.0
+      - key: DD_LOGS_INJECTION
+        value: "true"
+      - key: DD_TRACE_ENABLED
+        value: "true"
+      - key: DD_PROFILING_ENABLED
+        value: "false"
     healthCheckPath: /api/status
