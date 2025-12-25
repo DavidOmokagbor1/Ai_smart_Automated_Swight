@@ -8,6 +8,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_DIR="$(git rev-parse --git-dir)"
 
+# Create hooks directory if it doesn't exist
+mkdir -p "$GIT_DIR/hooks"
+
 # Copy pre-commit hook
 cp "$SCRIPT_DIR/pre-commit" "$GIT_DIR/hooks/pre-commit"
 chmod +x "$GIT_DIR/hooks/pre-commit"
