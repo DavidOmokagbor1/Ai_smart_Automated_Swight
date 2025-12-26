@@ -29,65 +29,27 @@ def when_ready(server):
 
 def post_fork(server, worker):
     """Called just after a worker has been forked"""
-    # #region agent log
-    _fork_time = time_module.time()
-    try:
-        with open(_debug_log_path, 'a') as f:
-            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:20","message":"post_fork called","hypothesisId":"E","sessionId":"debug-session","runId":"run1","data":{{"worker_pid":{worker.pid}}}}}\n')
-    except: pass
-    # #endregion
     logger.info(f"🔄 Worker {worker.pid} forked - starting background initialization")
     # Initialize app components after worker is forked (non-blocking)
-    # Use a small delay to ensure worker is fully ready before starting init
+    # CRITICAL: Don't block here - worker must become ready quickly for health checks
     import threading
     import time
     
     def delayed_init():
-        # #region agent log
+        # Longer delay to ensure worker is fully ready and can respond to health checks
+        time.sleep(1.0)  # Increased delay to let worker become ready first
         try:
-            with open(_debug_log_path, 'a') as f:
-                f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:28","message":"delayed_init started","hypothesisId":"E","sessionId":"debug-session","runId":"run1"}}\n')
-        except: pass
-        # #endregion
-        # Small delay to ensure worker is ready
-        time.sleep(0.2)
-        try:
-            # #region agent log
-            _import_start = time_module.time()
-            try:
-                with open(_debug_log_path, 'a') as f:
-                    f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:32","message":"Importing initialize_app_background","hypothesisId":"E","sessionId":"debug-session","runId":"run1"}}\n')
-            except: pass
-            # #endregion
             from app import initialize_app_background
-            # #region agent log
-            _import_time = time_module.time() - _import_start
-            try:
-                with open(_debug_log_path, 'a') as f:
-                    f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:33","message":"Import complete","data":{{"import_time_ms":{_import_time*1000:.2f}}},"hypothesisId":"E","sessionId":"debug-session","runId":"run1"}}\n')
-            except: pass
-            # #endregion
             initialize_app_background()
         except Exception as e:
-            logger.error(f"Error initializing app in worker: {e}")
-            # #region agent log
-            try:
-                with open(_debug_log_path, 'a') as f:
-                    f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:35","message":"Initialization error","data":{{"error":str(e)}},"hypothesisId":"E","sessionId":"debug-session","runId":"run1"}}\n')
-            except: pass
-            # #endregion
+            logger.error(f"Error initializing app in worker: {e}", exc_info=True)
+            # Don't fail worker - app can run with minimal initialization
     
     # Run in background thread to avoid blocking worker
+    # Worker must be able to respond to health checks immediately
     init_thread = threading.Thread(target=delayed_init, daemon=True)
     init_thread.start()
-    # #region agent log
-    _fork_complete_time = time_module.time() - _fork_time
-    try:
-        with open(_debug_log_path, 'a') as f:
-            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:40","message":"post_fork complete","data":{{"fork_time_ms":{_fork_complete_time*1000:.2f}}},"hypothesisId":"E","sessionId":"debug-session","runId":"run1"}}\n')
-    except: pass
-    # #endregion
-    logger.info(f"✅ Background initialization thread started for worker {worker.pid}")
+    logger.info(f"✅ Background initialization thread started for worker {worker.pid} - worker ready to accept requests")
 
 def pre_fork(server, worker):
     """Called just before a worker is forked"""
@@ -106,7 +68,8 @@ bind = f"0.0.0.0:{os.getenv('PORT', '5000')}"
 workers = int(os.getenv('WORKERS', '1'))
 worker_class = 'eventlet'
 worker_connections = 1000
-timeout = int(os.getenv('TIMEOUT', '180'))  # Increased timeout for initialization
+timeout = int(os.getenv('TIMEOUT', '300'))  # Increased timeout for Render health checks (5 minutes)
+graceful_timeout = int(os.getenv('GRACEFUL_TIMEOUT', '120'))  # Time to wait for graceful shutdown
 keepalive = 5
 max_requests = 1000
 max_requests_jitter = 50

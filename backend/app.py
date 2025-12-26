@@ -1261,6 +1261,7 @@ def get_status():
     """
     Get current system status including all lights and energy data.
     Also serves as health check endpoint for Render.
+    Optimized to respond quickly even during initialization.
     
     Returns:
         JSON: System status with lights state, energy data, and timestamp
@@ -1270,9 +1271,18 @@ def get_status():
     """
     try:
         # Return comprehensive system status
+        # Use try/except to handle cases where data might not be initialized yet
+        try:
+            lights = lights_state
+            energy = energy_data
+        except (NameError, AttributeError):
+            # If not initialized yet, return minimal status
+            lights = {}
+            energy = {'consumption': 0, 'savings': 0}
+        
         status = {
-            'lights': lights_state,
-            'energy': energy_data,
+            'lights': lights,
+            'energy': energy,
             'timestamp': datetime.now().isoformat(),
             'status': 'healthy',
             'version': '1.1.0'

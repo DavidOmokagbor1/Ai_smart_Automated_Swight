@@ -6,7 +6,7 @@ services:
     plan: free
     rootDir: backend
     buildCommand: "pip install --upgrade pip setuptools wheel && pip install -r requirements.txt"
-    startCommand: "gunicorn --worker-class eventlet -w 1 --timeout 180 --bind 0.0.0.0:$PORT --config gunicorn_config.py app:app"
+    startCommand: "gunicorn --worker-class eventlet -w 1 --timeout 300 --graceful-timeout 120 --bind 0.0.0.0:$PORT --config gunicorn_config.py app:app"
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
