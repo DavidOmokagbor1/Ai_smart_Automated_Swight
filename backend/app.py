@@ -980,6 +980,23 @@ def initialize_app_background():
     except Exception as ai_control_error:
         logger.warning(f"⚠️ AI control loop failed: {ai_control_error}")
     
+    # Initialize SocketIO in background (non-critical for health checks)
+    try:
+        def init_socketio():
+            time.sleep(2.0)  # Wait a bit longer to ensure worker is fully ready
+            try:
+                _get_socketio()  # Trigger lazy initialization
+                ensure_socketio_events_registered()
+                logger.info("✅ SocketIO initialized and events registered")
+            except Exception as sio_error:
+                logger.warning(f"⚠️ SocketIO initialization failed: {sio_error}")
+        
+        socketio_thread = threading.Thread(target=init_socketio, daemon=True)
+        socketio_thread.start()
+        logger.info("✅ SocketIO initialization started in background")
+    except Exception as socketio_error:
+        logger.warning(f"⚠️ SocketIO background init failed: {socketio_error}")
+    
     try:
         weather_thread = threading.Thread(target=weather_update_loop, daemon=True)
         weather_thread.start()
