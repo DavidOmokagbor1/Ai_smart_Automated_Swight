@@ -228,49 +228,56 @@ CORS(app,
      },
      supports_credentials=True)
 
-# Initialize Socket.IO for real-time bidirectional communication
-# Uses Eventlet async mode for WebSocket support in production (Gunicorn)
-# Allow all origins for Socket.IO and validate in connect handler
-# #region agent log
-_socketio_start = time_module.time()
-try:
-    with open(_debug_log_path, 'a') as f:
-        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:252","message":"Starting SocketIO init","hypothesisId":"C","sessionId":"debug-session","runId":"run1"}}\n')
-except: pass
-# #endregion
-# Initialize SocketIO - but make import non-blocking
-# Try to import, but if it blocks or fails, create dummy
-socketio = None
-try:
-    # Try importing with a quick check - if it takes too long, skip it
-    from flask_socketio import SocketIO, emit
-    # Only create instance if import succeeded
-    socketio = SocketIO(app, cors_allowed_origins='*', allow_credentials=True, async_mode='eventlet')
-except (ImportError, Exception) as e:
-    logger.warning(f"SocketIO not available, using dummy: {e}")
-    # Create dummy socketio
-    class DummySocketIO:
-        def emit(self, *args, **kwargs):
-            pass
-        def on(self, *args, **kwargs):
-            def decorator(f):
-                return f
-            return decorator
-        def run(self, *args, **kwargs):
-            pass
-    socketio = DummySocketIO()
-    emit = lambda *args, **kwargs: None
+# Initialize Socket.IO LAZILY - don't block module import
+# SocketIO with eventlet can be slow to initialize, so we defer it
+# This allows the app to start quickly and respond to health checks
+_socketio_instance = None
+_socketio_lock = threading.Lock()
 
 def _get_socketio():
-    """Get socketio instance (for compatibility)"""
-    return socketio
-# #region agent log
-_socketio_time = time_module.time() - _socketio_start
-try:
-    with open(_debug_log_path, 'a') as f:
-        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:252","message":"SocketIO init complete","data":{{"init_time_ms":{_socketio_time*1000:.2f}}},"hypothesisId":"C","sessionId":"debug-session","runId":"run1"}}\n')
-except: pass
-# #endregion
+    """Get socketio instance (lazy initialization)"""
+    global _socketio_instance
+    if _socketio_instance is None:
+        with _socketio_lock:
+            if _socketio_instance is None:  # Double-check locking
+                try:
+                    from flask_socketio import SocketIO
+                    _socketio_instance = SocketIO(app, cors_allowed_origins='*', allow_credentials=True, async_mode='eventlet')
+                    logger.info("✅ SocketIO initialized")
+                except (ImportError, Exception) as e:
+                    logger.warning(f"SocketIO not available, using dummy: {e}")
+                    # Create dummy socketio
+                    class DummySocketIO:
+                        def emit(self, *args, **kwargs):
+                            pass
+                        def on(self, *args, **kwargs):
+                            def decorator(f):
+                                return f
+                            return decorator
+                        def run(self, *args, **kwargs):
+                            pass
+                    _socketio_instance = DummySocketIO()
+    return _socketio_instance
+
+# Create emit function for compatibility
+def emit(*args, **kwargs):
+    """Emit function that uses lazy SocketIO"""
+    try:
+        _get_socketio().emit(*args, **kwargs)
+    except Exception as e:
+        logger.debug(f"Socket emit failed: {e}")
+
+# For backwards compatibility - create a property-like accessor
+class SocketIOProxy:
+    """Proxy for socketio that initializes lazily"""
+    def on(self, *args, **kwargs):
+        return _get_socketio().on(*args, **kwargs)
+    def emit(self, *args, **kwargs):
+        return _get_socketio().emit(*args, **kwargs)
+    def run(self, *args, **kwargs):
+        return _get_socketio().run(*args, **kwargs)
+
+socketio = SocketIOProxy()
 
 def safe_socket_emit(event, data, room=None):
     """
@@ -931,11 +938,6 @@ def ensure_ai_models_initialized():
 def initialize_app_background():
     """Initialize app components in background (non-blocking for Gunicorn)"""
     # #region agent log
-    try:
-        with open(_debug_log_path, 'a') as f:
-            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:816","message":"initialize_app_background called","hypothesisId":"E","sessionId":"debug-session","runId":"run1"}}\n')
-    except: pass
-    # #endregion
     # Add a small delay to ensure worker is fully ready
     time.sleep(0.5)
     
@@ -2218,46 +2220,63 @@ def get_statistics():
         logger.error(f"Error getting statistics: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
-# Socket.IO events
-@socketio.on('connect')
-def handle_connect():
-    """Handle client connection with origin validation"""
-    origin = request.headers.get('Origin') or request.headers.get('Referer', '')
-    if not is_origin_allowed(origin):
-        logger.warning(f'Connection rejected from unauthorized origin: {origin}')
-        return False  # Reject connection
-    logger.info(f'Client connected from: {origin}')
+# Socket.IO events - registered lazily when SocketIO is initialized
+def _register_socketio_events():
+    """Register SocketIO event handlers (called lazily)"""
+    sio = _get_socketio()
     
-    # Track WebSocket connection
-    if DATADOG_IMPORTED:
-        track_websocket_event('connect')
-    
-    emit('connected', {'data': 'Connected'})
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    """Handle client disconnection"""
-    try:
-        logger.info('Client disconnected')
-    except Exception as e:
-        # Ignore socket cleanup errors (common with Eventlet)
-        # "Bad file descriptor" errors are harmless cleanup issues
-        if 'Bad file descriptor' not in str(e):
-            logger.debug(f'Socket disconnect cleanup: {e}')
-
-@socketio.on('motion_detected')
-def handle_motion(data):
-    """Handle motion detection"""
-    room = data.get('room')
-    if room in lights_state:
-        lights_state[room]['motion_detected'] = True
+    @sio.on('connect')
+    def handle_connect():
+        """Handle client connection with origin validation"""
+        origin = request.headers.get('Origin') or request.headers.get('Referer', '')
+        if not is_origin_allowed(origin):
+            logger.warning(f'Connection rejected from unauthorized origin: {origin}')
+            return False  # Reject connection
+        logger.info(f'Client connected from: {origin}')
         
-        # Track motion detection
+        # Track WebSocket connection
         if DATADOG_IMPORTED:
-            track_websocket_event('motion_detected', room)
+            track_websocket_event('connect')
         
-        safe_socket_emit('motion_update', {'room': room})
-        logger.info(f'Motion detected in {room}')
+        emit('connected', {'data': 'Connected'})
+
+    @sio.on('disconnect')
+    def handle_disconnect():
+        """Handle client disconnection"""
+        try:
+            logger.info('Client disconnected')
+        except Exception as e:
+            # Ignore socket cleanup errors (common with Eventlet)
+            # "Bad file descriptor" errors are harmless cleanup issues
+            if 'Bad file descriptor' not in str(e):
+                logger.debug(f'Socket disconnect cleanup: {e}')
+
+    @sio.on('motion_detected')
+    def handle_motion(data):
+        """Handle motion detection"""
+        room = data.get('room')
+        if room in lights_state:
+            lights_state[room]['motion_detected'] = True
+            
+            # Track motion detection
+            if DATADOG_IMPORTED:
+                track_websocket_event('motion_detected', room)
+            
+            safe_socket_emit('motion_update', {'room': room})
+            logger.info(f'Motion detected in {room}')
+
+# Register events in background after app starts
+_socketio_events_registered = False
+def ensure_socketio_events_registered():
+    """Ensure SocketIO events are registered (lazy)"""
+    global _socketio_events_registered
+    if not _socketio_events_registered:
+        try:
+            _register_socketio_events()
+            _socketio_events_registered = True
+            logger.info("✅ SocketIO events registered")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register SocketIO events: {e}")
 
 # CORS headers handler - add headers to all responses
 @app.after_request
@@ -2497,12 +2516,12 @@ if __name__ == '__main__':
         if os.getenv('FLASK_ENV') == 'production':
             # Production: Use Gunicorn or similar WSGI server
             sio = _get_socketio()
-            _register_socketio_events()
+            ensure_socketio_events_registered()
             sio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
         else:
             # Development
             sio = _get_socketio()
-            _register_socketio_events()
+            ensure_socketio_events_registered()
             sio.run(app, host='0.0.0.0', port=port, debug=True, allow_unsafe_werkzeug=True)
     except Exception as startup_error:
         logger.error(f"❌ Fatal error during startup: {startup_error}", exc_info=True)
