@@ -15,10 +15,22 @@ Version: 1.1.0
 
 import os
 import time as time_module
-# Debug logging removed to prevent blocking during module import
-# Load environment variables FIRST - before any other imports that might need them
+# #region agent log
+_debug_log_path = '/Volumes/2-2-22/BEATZBYJAVA PRODUCTIONS WEB/Ai_smart_Automated_Swight/.cursor/debug.log'
+_module_import_start = time_module.time()
+try:
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:17","message":"Module import started","hypothesisId":"A","sessionId":"debug-session","runId":"run1","data":{{"pid":{os.getpid()}}}}}\n')
+except: pass
+# #endregion
 from dotenv import load_dotenv
 load_dotenv()
+# #region agent log
+try:
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:22","message":"dotenv loaded","hypothesisId":"A","sessionId":"debug-session","runId":"run1"}}\n')
+except: pass
+# #endregion
 
 # CRITICAL: Skip Datadog during module import to prevent blocking
 # Datadog will be initialized later in background if needed
@@ -103,8 +115,22 @@ if not DATADOG_IMPORTED:
     logger.warning("Datadog integration not available - monitoring will be limited")
 
 # Initialize Flask application
+# #region agent log
+_flask_app_start = time_module.time()
+try:
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:126","message":"Creating Flask app","hypothesisId":"C","sessionId":"debug-session","runId":"run1"}}\n')
+except: pass
+# #endregion
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
+# #region agent log
+_flask_app_time = time_module.time() - _flask_app_start
+try:
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:129","message":"Flask app created","hypothesisId":"C","sessionId":"debug-session","runId":"run1","data":{{"creation_time_ms":{_flask_app_time*1000:.2f}}}}}\n')
+except: pass
+# #endregion
 
 # Setup Datadog Flask tracing (after app is created)
 # Skip during import - will be initialized in background thread
@@ -865,6 +891,12 @@ def ensure_ai_models_initialized():
 def initialize_app_background():
     """Initialize app components in background (non-blocking for Gunicorn)"""
     # #region agent log
+    _init_start = time_module.time()
+    try:
+        with open(_debug_log_path, 'a') as f:
+            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:initialize_app_background","message":"Background init started","hypothesisId":"B","sessionId":"debug-session","runId":"run1","data":{{"pid":{os.getpid()}}}}}\n')
+    except: pass
+    # #endregion
     # Add a small delay to ensure worker is fully ready
     time.sleep(0.5)
     
@@ -953,6 +985,13 @@ def initialize_app_background():
         logger.warning(f"⚠️ Weather loop failed: {weather_error}")
     
     logger.info("📊 Energy monitoring active")
+    # #region agent log
+    _init_time = time_module.time() - _init_start
+    try:
+        with open(_debug_log_path, 'a') as f:
+            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:initialize_app_background","message":"Background init complete","hypothesisId":"B","sessionId":"debug-session","runId":"run1","data":{{"init_time_ms":{_init_time*1000:.2f}}}}}\n')
+    except: pass
+    # #endregion
     logger.info("🤖 AI prediction models loading in background")
     logger.info("💡 Smart automation enabled")
 
@@ -1232,6 +1271,13 @@ def get_status():
     Returns:
         JSON: System status (minimal during initialization)
     """
+    # #region agent log
+    _status_start = time_module.time()
+    try:
+        with open(_debug_log_path, 'a') as f:
+            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:1227","message":"Health check received","hypothesisId":"D","sessionId":"debug-session","runId":"run1","data":{{"pid":{os.getpid()},"worker_ready":true}}}}\n')
+    except: pass
+    # #endregion
     try:
         # Return immediately - don't wait for anything to initialize
         # Try to get data, but don't fail if not ready
@@ -1250,6 +1296,13 @@ def get_status():
             'lights': lights,
             'energy': energy
         }
+        # #region agent log
+        _status_time = time_module.time() - _status_start
+        try:
+            with open(_debug_log_path, 'a') as f:
+                f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:1253","message":"Health check response ready","hypothesisId":"D","sessionId":"debug-session","runId":"run1","data":{{"response_time_ms":{_status_time*1000:.2f}}}}}\n')
+        except: pass
+        # #endregion
         return jsonify(status)
     except Exception as e:
         logger.error(f"Error getting system status: {e}", exc_info=True)
@@ -2465,6 +2518,14 @@ def update_profile():
     except Exception as e:
         logger.error(f"Profile update error: {e}")
         return jsonify({'message': 'Profile update failed'}), 500
+
+# #region agent log
+_module_import_time = time_module.time() - _module_import_start
+try:
+    with open(_debug_log_path, 'a') as f:
+        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:2509","message":"Module import complete","hypothesisId":"A","sessionId":"debug-session","runId":"run1","data":{{"total_import_time_ms":{_module_import_time*1000:.2f},"routes_registered":{len(app.url_map.iter_rules())}}}}}\n')
+except: pass
+# #endregion
 
 if __name__ == '__main__':
     try:
