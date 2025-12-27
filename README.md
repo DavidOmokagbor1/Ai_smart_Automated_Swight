@@ -20,6 +20,13 @@ An AI-powered smart lighting system that reduces energy consumption by **30-50%*
 ![OpenWeatherMap](https://img.shields.io/badge/OpenWeatherMap-EE6A4C?style=for-the-badge&logo=openweathermap&logoColor=white)
 ![MonitorUptime Robot](https://img.shields.io/badge/MonitorUptime_Robot-00C853?style=for-the-badge&logo=uptimerobot&logoColor=white)
 
+
+
+https://github.com/user-attachments/assets/d24eae7b-8baa-4562-8931-e877ad16b833
+
+
+
+
 ## 🎯 Key Features
 
 - **AI-Powered Predictions**: 85-96% accuracy occupancy prediction using Random Forest
