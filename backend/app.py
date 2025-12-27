@@ -481,9 +481,9 @@ def get_weather_data():
                     params['q'] = WEATHER_CITY
                     location_str = WEATHER_CITY
                 
-                # Use session with retry logic, shorter timeout for DNS (fails fast if DNS broken)
-                # DNS errors won't resolve with retries, so fail fast and use demo data
-                response = weather_session.get(WEATHER_BASE_URL, params=params, timeout=(3, 8))
+                # Use session with retry logic, reasonable timeout for production
+                # Increased timeout for Render's network conditions
+                response = weather_session.get(WEATHER_BASE_URL, params=params, timeout=(5, 15))
                 if response.status_code == 200:
                     weather_data = response.json()
                     # Add name if not present (for coordinate-based calls)
@@ -1763,7 +1763,8 @@ def get_weather():
     """Get current weather data"""
     try:
         # Log API key status for debugging (don't log the actual key)
-        if WEATHER_API_KEY == 'demo_key':
+        api_key_set = WEATHER_API_KEY != 'demo_key' and WEATHER_API_KEY != 'your-openweathermap-api-key'
+        if not api_key_set:
             logger.warning("⚠️ Using demo weather data - WEATHER_API_KEY not set")
         else:
             logger.info(f"✅ Weather API key is set (length: {len(WEATHER_API_KEY)})")
@@ -1774,8 +1775,13 @@ def get_weather():
             return jsonify({
                 'error': 'Weather data unavailable',
                 'message': 'API call failed and no cached data available. Check WEATHER_API_KEY in Render environment variables.',
-                'api_key_set': WEATHER_API_KEY != 'demo_key'
-            }), 500
+                'api_key_set': api_key_set,
+                'using_demo': True
+            }), 200  # Return 200 with error message so frontend can handle it
+        
+        # Check if we're using demo data
+        using_demo = not api_key_set or (weather_data.get('main', {}).get('temp') == 72 and 
+                                        weather_data.get('weather', [{}])[0].get('description') == 'scattered clouds')
         
         weather_adjustment = get_weather_lighting_adjustment()
         natural_light_factor = get_natural_light_factor()
@@ -1785,15 +1791,30 @@ def get_weather():
             'lighting_adjustment': round(weather_adjustment, 2),
             'natural_light_factor': round(natural_light_factor, 2),
             'timestamp': datetime.now().isoformat(),
-            'api_key_set': WEATHER_API_KEY != 'demo_key'
+            'api_key_set': api_key_set,
+            'using_demo': using_demo,
+            'location': weather_data.get('name', WEATHER_CITY)
         })
     except Exception as e:
         logger.error(f"❌ Error getting weather: {e}", exc_info=True)
-        return jsonify({
-            'error': 'Internal server error',
-            'message': str(e),
-            'api_key_set': WEATHER_API_KEY != 'demo_key'
-        }), 500
+        # Return demo data on error so frontend always gets something
+        try:
+            demo_data = get_demo_weather_data()
+            return jsonify({
+                'weather': demo_data,
+                'lighting_adjustment': 1.0,
+                'natural_light_factor': 1.0,
+                'timestamp': datetime.now().isoformat(),
+                'api_key_set': api_key_set,
+                'using_demo': True,
+                'error': str(e)[:200]
+            })
+        except:
+            return jsonify({
+                'error': 'Internal server error',
+                'message': str(e)[:200],
+                'api_key_set': api_key_set
+            }), 500
 
 @app.route('/api/weather/optimize', methods=['POST'])
 def apply_weather_optimization():
@@ -1923,9 +1944,9 @@ def get_weather_forecast():
             params['q'] = WEATHER_CITY
         
         # Use session with retry logic for forecast API
-        # Shorter timeout - DNS errors won't resolve with retries
+        # Increased timeout for Render's network conditions
         try:
-            response = weather_session.get(WEATHER_FORECAST_URL, params=params, timeout=(3, 8))
+            response = weather_session.get(WEATHER_FORECAST_URL, params=params, timeout=(5, 15))
             if response.status_code == 200:
                 forecast_data = response.json()
                 logger.info(f"✅ Successfully fetched weather forecast")
