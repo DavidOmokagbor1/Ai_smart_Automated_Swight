@@ -5,16 +5,6 @@ This ensures proper initialization and prevents worker timeouts
 
 import os
 import logging
-import time as time_module
-
-# #region agent log
-_debug_log_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.cursor', 'debug.log') if '__file__' in globals() else '/tmp/debug.log'
-try:
-    os.makedirs(os.path.dirname(_debug_log_path), exist_ok=True)
-    with open(_debug_log_path, 'a') as f:
-        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"gunicorn_config.py:10","message":"Gunicorn config loaded","hypothesisId":"D","sessionId":"debug-session","runId":"run1","data":{{"timeout":{int(os.getenv("TIMEOUT", "180"))}}}}}\n')
-except: pass
-# #endregion
 
 # Get logger
 logger = logging.getLogger(__name__)
