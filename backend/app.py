@@ -42,52 +42,44 @@ except: pass
 
 # CRITICAL: Initialize Datadog patching BEFORE importing Flask
 # ddtrace must patch Flask before Flask is imported
-# Make Datadog import completely optional and non-blocking
-# #region agent log
-_dd_start = time_module.time()
-try:
-    with open(_debug_log_path, 'a') as f:
-        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:23","message":"Starting Datadog import","hypothesisId":"B","sessionId":"debug-session","runId":"run1"}}\n')
-except: pass
-# #endregion
-# Make Datadog completely optional - skip if it blocks
+# Make Datadog import completely optional and non-blocking with timeout
 DATADOG_IMPORTED = False
 init_datadog_early = None
-try:
-    from datadog_integration import init_datadog_early
-    # #region agent log
-    _dd_import_time = time_module.time() - _dd_start
+
+# Try to import Datadog with timeout protection
+def _init_datadog_with_timeout():
+    """Initialize Datadog with timeout to prevent blocking"""
+    global DATADOG_IMPORTED, init_datadog_early
     try:
-        with open(_debug_log_path, 'a') as f:
-            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:59","message":"Datadog import complete","data":{{"import_time_ms":{_dd_import_time*1000:.2f}}},"hypothesisId":"B","sessionId":"debug-session","runId":"run1"}}\n')
-    except: pass
-    # #endregion
-    # #region agent log
-    _dd_init_start = time_module.time()
-    try:
-        with open(_debug_log_path, 'a') as f:
-            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:60","message":"Starting Datadog init","hypothesisId":"B","sessionId":"debug-session","runId":"run1"}}\n')
-    except: pass
-    # #endregion
-    if init_datadog_early:
-        init_datadog_early()  # This patches Flask before import
-    # #region agent log
-    _dd_init_time = time_module.time() - _dd_init_start
-    try:
-        with open(_debug_log_path, 'a') as f:
-            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:60","message":"Datadog init complete","data":{{"init_time_ms":{_dd_init_time*1000:.2f}}},"hypothesisId":"B","sessionId":"debug-session","runId":"run1"}}\n')
-    except: pass
-    # #endregion
-    DATADOG_IMPORTED = True
-except (ImportError, Exception) as e:
-    # If Datadog import/init fails, continue without it - don't block startup
-    DATADOG_IMPORTED = False
-    # #region agent log
-    try:
-        with open(_debug_log_path, 'a') as f:
-            f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:70","message":"Datadog skipped (non-blocking)","data":{{"error":str(e)[:100]}},"hypothesisId":"B","sessionId":"debug-session","runId":"run1"}}\n')
-    except: pass
-    # #endregion
+        from datadog_integration import init_datadog_early
+        if init_datadog_early:
+            # Set a timeout - if it takes more than 2 seconds, skip it
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Datadog initialization timed out")
+            
+            # Only use timeout on Unix systems (not Windows)
+            try:
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(2)  # 2 second timeout
+                init_datadog_early()
+                signal.alarm(0)  # Cancel alarm
+                DATADOG_IMPORTED = True
+            except (AttributeError, OSError):
+                # Windows doesn't support SIGALRM, just try without timeout
+                init_datadog_early()
+                DATADOG_IMPORTED = True
+    except (ImportError, Exception, TimeoutError) as e:
+        # If Datadog import/init fails or times out, continue without it
+        DATADOG_IMPORTED = False
+        logger.warning(f"Datadog initialization skipped: {e}")
+
+# Initialize Datadog in background thread to avoid blocking
+_datadog_thread = threading.Thread(target=_init_datadog_with_timeout, daemon=True)
+_datadog_thread.start()
+# Give it a tiny moment, but don't wait for it
+time.sleep(0.1)
 
 # Now import Flask (after Datadog patching)
 # #region agent log
@@ -122,13 +114,6 @@ except ImportError:
     from requests.packages.urllib3.util.retry import Retry
 import threading
 import time
-# #region agent log
-_flask_time = time_module.time() - _flask_start
-try:
-    with open(_debug_log_path, 'a') as f:
-        f.write(f'{{"timestamp":{int(time_module.time()*1000)},"location":"app.py:109","message":"Core imports complete (numpy/sklearn deferred)","data":{{"total_import_time_ms":{_flask_time*1000:.2f}}},"hypothesisId":"A","sessionId":"debug-session","runId":"run1"}}\n')
-except: pass
-# #endregion
 
 # Import advanced AI models lazily - don't import at module level to avoid blocking
 # These will be imported on first use
@@ -1278,35 +1263,29 @@ schedules = {
 @app.route('/')
 def get_status():
     """
-    Get current system status including all lights and energy data.
-    Also serves as health check endpoint for Render.
-    Optimized to respond quickly even during initialization.
+    Get current system status - optimized for fast health checks.
+    This endpoint MUST respond quickly (< 1 second) for Render health checks.
     
     Returns:
-        JSON: System status with lights state, energy data, and timestamp
-        
-    Errors:
-        500: Internal server error
+        JSON: System status (minimal during initialization)
     """
+    # Return immediately - don't wait for anything to initialize
     try:
-        # Return comprehensive system status
-        # Use try/except to handle cases where data might not be initialized yet
-        try:
-            lights = lights_state
-            energy = energy_data
-        except (NameError, AttributeError):
-            # If not initialized yet, return minimal status
-            lights = {}
-            energy = {'consumption': 0, 'savings': 0}
-        
-        status = {
-            'lights': lights,
-            'energy': energy,
-            'timestamp': datetime.now().isoformat(),
-            'status': 'healthy',
-            'version': '1.1.0'
-        }
-        return jsonify(status)
+        # Try to get data, but don't fail if not ready
+        lights = lights_state if 'lights_state' in globals() else {}
+        energy = energy_data if 'energy_data' in globals() else {'consumption': 0, 'savings': 0}
+    except:
+        lights = {}
+        energy = {'consumption': 0, 'savings': 0}
+    
+    status = {
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'version': '1.1.0',
+        'lights': lights,
+        'energy': energy
+    }
+    return jsonify(status)
     except KeyError as e:
         logger.error(f"Missing data in status response: {e}")
         return jsonify({'error': 'System data incomplete', 'status': 'degraded'}), 500
