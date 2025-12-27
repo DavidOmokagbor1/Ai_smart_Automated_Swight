@@ -40,46 +40,14 @@ try:
 except: pass
 # #endregion
 
-# CRITICAL: Initialize Datadog patching BEFORE importing Flask
-# ddtrace must patch Flask before Flask is imported
-# Make Datadog import completely optional and non-blocking with timeout
+# CRITICAL: Skip Datadog during module import to prevent blocking
+# Datadog will be initialized later in background if needed
+# This allows the app to start immediately and respond to health checks
 DATADOG_IMPORTED = False
 init_datadog_early = None
 
-# Try to import Datadog with timeout protection
-def _init_datadog_with_timeout():
-    """Initialize Datadog with timeout to prevent blocking"""
-    global DATADOG_IMPORTED, init_datadog_early
-    try:
-        from datadog_integration import init_datadog_early
-        if init_datadog_early:
-            # Set a timeout - if it takes more than 2 seconds, skip it
-            import signal
-            
-            def timeout_handler(signum, frame):
-                raise TimeoutError("Datadog initialization timed out")
-            
-            # Only use timeout on Unix systems (not Windows)
-            try:
-                signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(2)  # 2 second timeout
-                init_datadog_early()
-                signal.alarm(0)  # Cancel alarm
-                DATADOG_IMPORTED = True
-            except (AttributeError, OSError):
-                # Windows doesn't support SIGALRM, just try without timeout
-                init_datadog_early()
-                DATADOG_IMPORTED = True
-    except (ImportError, Exception, TimeoutError) as e:
-        # If Datadog import/init fails or times out, continue without it
-        DATADOG_IMPORTED = False
-        logger.warning(f"Datadog initialization skipped: {e}")
-
-# Initialize Datadog in background thread to avoid blocking
-_datadog_thread = threading.Thread(target=_init_datadog_with_timeout, daemon=True)
-_datadog_thread.start()
-# Give it a tiny moment, but don't wait for it
-time.sleep(0.1)
+# Datadog will be initialized in background after app starts
+# This prevents blocking during module import which causes worker timeouts
 
 # Now import Flask (after Datadog patching)
 # #region agent log
@@ -166,8 +134,9 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
 
 # Setup Datadog Flask tracing (after app is created)
-if DATADOG_IMPORTED:
-    setup_datadog_flask(app)
+# Skip during import - will be initialized in background thread
+# if DATADOG_IMPORTED:
+#     setup_datadog_flask(app)
 
 # Configure CORS (Cross-Origin Resource Sharing) for production
 # Allows requests from Vercel deployment domains (including preview URLs) and localhost for development
@@ -981,6 +950,27 @@ def initialize_app_background():
         logger.info("✅ SocketIO initialization started in background")
     except Exception as socketio_error:
         logger.warning(f"⚠️ SocketIO background init failed: {socketio_error}")
+    
+    # Initialize Datadog in background (completely non-blocking)
+    try:
+        def init_datadog_background():
+            time.sleep(3.0)  # Wait even longer to ensure app is fully ready
+            try:
+                from datadog_integration import init_datadog_early, setup_datadog_flask
+                if init_datadog_early:
+                    init_datadog_early()
+                setup_datadog_flask(app)
+                global DATADOG_IMPORTED
+                DATADOG_IMPORTED = True
+                logger.info("✅ Datadog initialized in background")
+            except Exception as dd_error:
+                logger.warning(f"⚠️ Datadog initialization failed: {dd_error}")
+        
+        datadog_thread = threading.Thread(target=init_datadog_background, daemon=True)
+        datadog_thread.start()
+        logger.info("✅ Datadog initialization started in background")
+    except Exception as datadog_error:
+        logger.warning(f"⚠️ Datadog background init failed: {datadog_error}")
     
     try:
         weather_thread = threading.Thread(target=weather_update_loop, daemon=True)
