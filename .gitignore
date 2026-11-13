@@ -26,6 +26,9 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Virtual environments
 venv/
@@ -33,12 +36,11 @@ env/
 ENV/
 .venv/
 
-# Environment variables
+# Environment variables — ignore all env files, keep examples
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
+!**/.env.example
 
 # IDE
 .vscode/
@@ -66,19 +68,15 @@ pids
 *.seed
 *.pid.lock
 
-# Coverage directory used by tools like istanbul
+# Coverage
 coverage/
-
-# nyc test coverage
 .nyc_output
 
 # Dependency directories
 jspm_packages/
 
-# Optional npm cache directory
+# Optional npm / eslint caches
 .npm
-
-# Optional eslint cache
 .eslintcache
 
 # Optional REPL history
@@ -90,11 +88,9 @@ jspm_packages/
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variables file
-.env
-
-# Flask
-instance/
+# Flask instance data (keep directory via .gitkeep)
+instance/*
+!instance/.gitkeep
 .webassets-cache
 
 # SQLite
@@ -102,7 +98,7 @@ instance/
 *.sqlite
 *.sqlite3
 
-# AI Models (if any large files)
+# AI Models (trained artifacts)
 *.pkl
 *.joblib
 *.h5
@@ -110,10 +106,8 @@ instance/
 
 # Temporary files
 *.tmp
-*.temp 
+*.temp
 .vercel
-frontend/node_modules/.cache/
-frontend/node_modules/.cache/
 
 # Expo/React Native
 mobile/node_modules/
@@ -121,8 +115,6 @@ mobile/.expo/
 mobile/.expo-shared/
 mobile/dist/
 mobile/web-build/
-mobile/.env.local
-mobile/.env.production
 *.jks
 *.p8
 *.p12
@@ -131,9 +123,4 @@ mobile/.env.production
 *.orig.*
 mobile/ios/
 mobile/android/
-backend/.env
-frontend/.env
-frontend/.env.development
-frontend/.env.production
-frontend/.env.local
-frontend/.env.*.local
+frontend/build/

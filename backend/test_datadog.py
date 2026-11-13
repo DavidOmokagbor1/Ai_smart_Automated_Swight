@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Quick test script to generate API traffic for Datadog testing.
+MANUAL smoke script — requires a running Flask server.
+Not collected by pytest (backend/pytest.ini uses testpaths=tests).
+
+Quick script to generate API traffic for Datadog testing.
 Run this after starting your Flask app to generate traces.
 """
 
