@@ -60,7 +60,5 @@ jobs:
         run: npm run build
         env:
           CI: true
-          # Pre-existing hook lint warnings — compile check only (no app behavior change)
-          DISABLE_ESLINT_PLUGIN: true
           REACT_APP_API_URL: http://localhost:5000
           REACT_APP_SOCKET_URL: http://localhost:5000

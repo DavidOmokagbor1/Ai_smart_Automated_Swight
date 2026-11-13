@@ -126,6 +126,8 @@ const Dashboard = ({ lights, schedules }) => {
         newSocket.disconnect();
       }
     };
+    // Mount-only: socket + polling setup. fetchSystemStatus is stable for this effect's purpose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchSystemStatus = async (retryCount = 0) => {
