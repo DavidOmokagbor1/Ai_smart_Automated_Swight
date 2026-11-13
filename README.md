@@ -1,8 +1,10 @@
-# 🤖 AI Smart Automated Light Control System
+# AI Smart Automated Light Control System
+
+[![CI](https://github.com/DavidOmokagbor1/Ai_smart_Automated_Swight/actions/workflows/ci.yml/badge.svg)](https://github.com/DavidOmokagbor1/Ai_smart_Automated_Swight/actions/workflows/ci.yml)
 
 An AI-powered smart lighting system that reduces energy consumption by **30-50%** using machine learning, real-time optimization, and weather integration.
 
-## 🛠️ Built With
+## Built With
 
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-000000?style=for-the-badge&logo=flask&logoColor=white)
@@ -27,7 +29,7 @@ https://github.com/user-attachments/assets/d24eae7b-8baa-4562-8931-e877ad16b833
 
 
 
-## 🎯 Key Features
+## Key Features
 
 - **AI-Powered Predictions**: 85-96% accuracy occupancy prediction using Random Forest
 - **Real-time Control**: WebSocket-based live updates across web and mobile
@@ -36,19 +38,19 @@ https://github.com/user-attachments/assets/d24eae7b-8baa-4562-8931-e877ad16b833
 - **Cross-Platform**: Web (React) and Mobile (React Native/Expo) applications
 - **Production Ready**: Deployed on Vercel (frontend) and Render (backend)
 
-## 📊 Results
+## Results
 
 - **Energy Reduction**: 30-50%
 - **Cost Savings**: $150+ per month
 - **AI Accuracy**: 85-96%
 - **CO₂ Reduction**: ~45 kg/month
 
-## 🌐 Live Demo
+## Live Demo
 
 - **Web App**: [ai-smart-automated-swight.vercel.app](https://ai-smart-automated-swight.vercel.app)
 - **API**: [ai-smart-automated-swight.onrender.com](https://ai-smart-automated-swight.onrender.com)
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Python 3.11+
@@ -64,11 +66,12 @@ cd Ai_smart_Automated_Swight
 # Backend setup
 cd backend
 pip install -r requirements.txt
-cp env.example .env
-# Edit .env with your configuration
+cp .env.example .env
+# Edit .env with your configuration (never commit .env)
 
 # Frontend setup
 cd ../frontend
+cp .env.example .env.local
 npm install
 
 # Run
@@ -76,16 +79,25 @@ python app.py  # Backend on :5000
 npm start      # Frontend on :3000
 ```
 
-## 🏗️ Tech Stack
+### Tests
+
+```bash
+cd backend
+pytest
+```
+
+`backend/test_datadog.py` is a manual live-server smoke script and is not part of the default pytest suite.
+
+## Tech Stack
 
 **Frontend**: React 18, Tailwind CSS, Socket.IO Client, Recharts  
-**Backend**: Flask, Flask-SocketIO, SQLAlchemy, Scikit-learn  
+**Backend**: Flask, Flask-SocketIO, sqlite3, Scikit-learn  
 **Mobile**: React Native, Expo  
 **Deployment**: Vercel, Render  
 **Monitoring**: Datadog, MonitorUptime Robot  
 **APIs**: OpenWeatherMap
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 ├── backend/     # Flask API + ML models
@@ -94,7 +106,7 @@ npm start      # Frontend on :3000
 └── docs/        # Documentation
 ```
 
-## 📚 Documentation
+## Documentation
 
 - [System Overview](docs/SYSTEM_OVERVIEW.md)
 - [Weather API Setup](docs/WEATHER_API_SETUP.md)
@@ -102,11 +114,11 @@ npm start      # Frontend on :3000
 - [Security Guide](docs/SECURITY.md)
 - [Deployment Guide](VERCEL_DEPLOYMENT.md)
 
-## 📝 License
+## License
 
-MIT License
+MIT License — see [LICENSE](LICENSE)
 
-## 👨‍💻 Author
+## Author
 
 **David Omokagbor**  
 GitHub: [@DavidOmokagbor1](https://github.com/DavidOmokagbor1)
